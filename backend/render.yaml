@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: trading-bot-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /api/health
+    disk:
+      name: trading-bot-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: BOT_MODE
+        value: paper
+      - key: EXCHANGE_ID
+        value: binance
+      - key: SYMBOLS
+        value: BTC/USDT,ETH/USDT
+      - key: DASHBOARD_API_TOKEN
+        generateValue: true
+      - key: DATABASE_PATH
+        value: data/bot.db
