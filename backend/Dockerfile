@@ -12,8 +12,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 
 RUN mkdir -p /app/data
-VOLUME ["/app/data"]
 
+# NOTE: no VOLUME directive here — Railway's builder rejects it. Persist
+# /app/data by attaching a Railway Volume (or, on Render, the disk in
+# render.yaml) to this path instead.
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
