@@ -1,0 +1,24 @@
+# --- Backend (Python) -------------------------------------------------
+backend/.venv/
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.pyc
+backend/.env
+backend/data/
+backend/.pytest_cache/
+
+# --- Frontend (Node / Next.js) -----------------------------------------
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env
+frontend/.env.local
+frontend/.vercel/
+frontend/npm-debug.log*
+
+# --- OS / editor ---------------------------------------------------------
+.DS_Store
+*.swp
+.vscode/
+.idea/
