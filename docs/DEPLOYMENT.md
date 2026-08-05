@@ -3,6 +3,21 @@
 Two independent deploys: **backend** (Railway or Render, a long-lived
 process) and **frontend** (Vercel).
 
+## Current live deployment
+
+This project is currently deployed in **paper mode** (simulated wallet,
+real market data, zero exchange risk):
+
+- Backend (Railway): https://fredb-trading-bot-production.up.railway.app
+- Frontend (Vercel): https://fredb-trading-bot-dashboard.vercel.app
+
+The bot is left **stopped** by default after each deploy — press **Start**
+on the dashboard to begin paper trading. `CORS_ORIGINS` on the backend and
+`BACKEND_URL`/`DASHBOARD_API_TOKEN` on the frontend are already wired to
+each other. To promote this deployment to testnet/live, follow steps 3–4
+below and update the Railway environment variables via `railway variable
+set` or the dashboard.
+
 ## 0. Before you deploy anything
 
 - Generate a dashboard token: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
