@@ -11,25 +11,20 @@ real market data, zero exchange risk):
 - Backend (Railway): https://fredb-trading-bot-production.up.railway.app
   — running in the **europe-west4** region (moved from the default `sfo`
   region after Binance returned HTTP 451 for US-based requests)
-- Frontend (Vercel) — two Vercel *projects* both point at this same repo
-  and both serve the same dashboard against the same backend (harmless
-  duplication; the second one, `fredb`, existed already — auto-created by
-  Vercel's GitHub integration the moment this repo was created, before this
-  deployment work started — and just needed its Root Directory/Framework
-  set correctly instead of building from the bare repo root):
-  - https://fredb-trading-bot-dashboard.vercel.app (project `fredb-trading-bot-dashboard`)
-  - https://fredb-lyart.vercel.app (project `fredb`)
-  - Both auto-deploy on every push to `main` (git-connected, Root
-    Directory `frontend`, Framework `Next.js`)
+- Frontend (Vercel): https://fredb-lyart.vercel.app (project `fredb`)
+  — auto-deploys on every push to `main` (git-connected, Root Directory
+  `frontend`, Framework `Next.js`). A second, duplicate project
+  (`fredb-trading-bot-dashboard`) briefly existed and was deleted to avoid
+  confusion — this is the one canonical frontend URL now.
 
 The bot's running/stopped state persists across redeploys (SQLite state on
 a Railway Volume) — it does not reset to stopped on its own. `CORS_ORIGINS`
-on the backend doesn't need to list either frontend domain: the browser
-only ever talks to the Vercel domain's own `/api/*` routes (same-origin),
-which then proxy server-to-server to Railway — a hop CORS doesn't apply
-to. To promote this deployment to testnet/live, follow steps 3–4 below and
-update the Railway environment variables via `railway variable set` or
-the dashboard.
+on the backend doesn't need to list the frontend domain: the browser only
+ever talks to the Vercel domain's own `/api/*` routes (same-origin), which
+then proxy server-to-server to Railway — a hop CORS doesn't apply to. To
+promote this deployment to testnet/live, follow steps 3–4 below and update
+the Railway environment variables via `railway variable set` or the
+dashboard.
 
 ## 0. Before you deploy anything
 
