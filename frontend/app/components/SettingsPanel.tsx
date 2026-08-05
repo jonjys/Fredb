@@ -29,6 +29,9 @@ export default function SettingsPanel() {
       .then((s: SettingsOut) => {
         setSettings(s);
         setDraft(s);
+      })
+      .catch(() => {
+        // Backend unreachable — leave the panel empty rather than crash the page.
       });
   }, []);
 
