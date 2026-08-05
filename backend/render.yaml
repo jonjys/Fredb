@@ -5,6 +5,7 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     plan: starter
+    region: frankfurt
     healthCheckPath: /api/health
     disk:
       name: trading-bot-data

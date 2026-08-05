@@ -9,10 +9,14 @@ This project is currently deployed in **paper mode** (simulated wallet,
 real market data, zero exchange risk):
 
 - Backend (Railway): https://fredb-trading-bot-production.up.railway.app
+  — running in the **europe-west4** region (moved from the default `sfo`
+  region after Binance returned HTTP 451 for US-based requests)
 - Frontend (Vercel): https://fredb-trading-bot-dashboard.vercel.app
+  — auto-deploys on every push to `main` (Vercel project is git-connected,
+  Root Directory set to `frontend`)
 
-The bot is left **stopped** by default after each deploy — press **Start**
-on the dashboard to begin paper trading. `CORS_ORIGINS` on the backend and
+The bot's running/stopped state persists across redeploys (SQLite state on
+a Railway Volume) — it does not reset to stopped on its own. `CORS_ORIGINS` on the backend and
 `BACKEND_URL`/`DASHBOARD_API_TOKEN` on the frontend are already wired to
 each other. To promote this deployment to testnet/live, follow steps 3–4
 below and update the Railway environment variables via `railway variable
@@ -44,10 +48,19 @@ set` or the dashboard.
    the Dockerfile's `CMD` already reads `$PORT`.
 6. Verify: `curl https://<your-app>.up.railway.app/api/health` → `{"status":"ok"}`.
 
-**Region note:** Binance blocks some regions (notably US). If your
-Railway/Render region gets HTTP 451 from Binance, redeploy in a European
-region, or use Binance's dedicated `binance.us` `EXCHANGE_ID` variant for
-US-based deployments, or switch `EXCHANGE_ID=coinbase`.
+**Region note (important):** Binance blocks US IPs outright (HTTP 451
+"Service unavailable from a restricted location"). Both Railway's and
+Render's *default* regions are in the US (`sfo`/`us-west2` on Railway,
+Oregon on Render) — deploying with defaults will hit this immediately.
+This repo's configs already default to Europe:
+`backend/railway.json` pins `europe-west4-drams3a`, and
+`backend/render.yaml` sets `region: frankfurt`. If you deploy manually
+and skip these configs, explicitly select a European region yourself
+(Railway: `railway service scale eu-west=1 <your-current-region>=0`;
+Render: pick `Frankfurt` in the dashboard). Symptom to watch for in the
+live log: `Exchange call failed ... 451 ... restricted location`.
+Alternatives if you must run from the US: `EXCHANGE_ID=binanceus` (a
+different exchange with different pairs/liquidity) or `EXCHANGE_ID=coinbase`.
 
 ### Alternative — Render
 
