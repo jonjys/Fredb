@@ -122,5 +122,22 @@ floor exists specifically to keep the bot on pairs deep enough that a
 normal-sized order doesn't move the market against itself. Lower it only
 if you understand and accept that trade-off; don't set it to zero.
 
+**Also important:** Binance's USDT-M futures list more than crypto —
+tokenized-stock and tokenized-commodity perpetuals (tokenized equities,
+tokenized gold, leveraged-ETF tokens) show up as plain linear USDT swaps,
+indistinguishable from a crypto perpetual in the exchange's own market
+metadata, and with tickers that don't obviously read as non-crypto either
+(observed live: `HEI`, `SPCX`, `SNDK`, `XAU`, `SOXL`, `MU`, `SKHYNIX`,
+`KORU`). Two attempts at filtering these out algorithmically both failed
+in practice — cross-referencing Binance's own spot listings (some of these
+are spot-listed too) and cross-referencing CoinGecko's coin list (CoinGecko
+tracks tokenized-RWA products as "crypto" as well). The dynamic scan
+therefore only trades base assets on a curated allowlist
+(`backend/app/exchange.py` → `KNOWN_CRYPTO_BASE_ASSETS`) — real
+cryptocurrencies including popular meme coins, explicitly not tokenized
+traditional-market wrappers. If a legitimate coin isn't on the list yet,
+add it via `FUTURES_EXTRA_ALLOWED_SYMBOLS` (comma-separated) rather than
+loosening the matching logic itself.
+
 Set `FUTURES_SYMBOL_MODE=fixed` with an explicit `FUTURES_SYMBOLS` list to
 go back to trading only specific pairs.
