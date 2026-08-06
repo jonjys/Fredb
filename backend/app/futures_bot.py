@@ -18,7 +18,7 @@ import asyncio
 import datetime as dt
 import logging
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from app.config import Settings
 from app.exchange import FuturesBroker, build_futures_broker
@@ -28,6 +28,12 @@ from app.state_store import StateStore
 from app.strategy import ScalpingStrategy
 
 logger = logging.getLogger("tradingbot.futures_bot")
+
+# How often the dynamic (top-volume) symbol universe is refreshed. Doing
+# this every poll tick would mean an extra fetch-all-tickers call every few
+# seconds for no benefit — the set of liquid pairs doesn't meaningfully
+# change minute to minute.
+DYNAMIC_SYMBOL_REFRESH_SECONDS = 300
 
 
 class FuturesTradingBot:
@@ -40,6 +46,8 @@ class FuturesTradingBot:
         self._task: Optional[asyncio.Task] = None
         self._stopping = False
         self._last_prices: Dict[str, float] = {}
+        self._dynamic_symbols: List[str] = []
+        self._dynamic_symbols_refreshed_at: float = 0.0
 
     async def start_background_loop(self) -> None:
         await asyncio.to_thread(self.store.init, self.settings.futures_paper_starting_balance)
@@ -47,11 +55,17 @@ class FuturesTradingBot:
         if self.settings.futures_mode == "paper":
             self.broker.quote_balance = state.paper_balance  # type: ignore[attr-defined]
         self._task = asyncio.create_task(self._run_loop())
+        symbol_mode_desc = (
+            f"dynamic (top {self.settings.futures_dynamic_top_n} by 24h volume, "
+            f"min ${self.settings.futures_min_24h_volume_usd:,.0f})"
+            if self.settings.futures_symbol_mode == "dynamic"
+            else f"fixed ({','.join(self.settings.futures_symbols)})"
+        )
         logger.info(
             "Futures bot initialized: mode=%s exchange=%s symbols=%s leverage_default=%sx",
             self.settings.futures_mode,
             self.settings.futures_exchange_id,
-            ",".join(self.settings.futures_symbols),
+            symbol_mode_desc,
             self.settings.futures_leverage_default,
         )
 
@@ -124,13 +138,47 @@ class FuturesTradingBot:
             return
 
         open_symbols = {p.symbol for p in open_positions}
-        for symbol in self.settings.futures_symbols:
+        for symbol in await self._get_active_symbols():
             if symbol in open_symbols:
                 continue
             open_positions = await self.store.get_open_positions()
             if not self.risk.can_open_new_position(len(open_positions), state.kill_switch):
                 break
             await self._evaluate_entry(symbol, equity, state.leverage)
+
+    async def _get_active_symbols(self) -> List[str]:
+        if self.settings.futures_symbol_mode != "dynamic":
+            return self.settings.futures_symbols
+
+        now = time.time()
+        stale = now - self._dynamic_symbols_refreshed_at > DYNAMIC_SYMBOL_REFRESH_SECONDS
+        if stale or not self._dynamic_symbols:
+            try:
+                symbols = await self.broker.get_top_symbols(
+                    self.settings.futures_dynamic_top_n, self.settings.futures_min_24h_volume_usd
+                )
+                if symbols:
+                    self._dynamic_symbols = symbols
+                    self._dynamic_symbols_refreshed_at = now
+                    logger.info(
+                        "Futures dynamic symbol universe refreshed (top %s by 24h volume, "
+                        "min $%.0f): %s",
+                        self.settings.futures_dynamic_top_n,
+                        self.settings.futures_min_24h_volume_usd,
+                        ", ".join(symbols),
+                    )
+                else:
+                    logger.warning(
+                        "Dynamic symbol scan returned no pairs above the $%.0f volume floor",
+                        self.settings.futures_min_24h_volume_usd,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to refresh dynamic futures symbol universe — keeping previous list"
+                )
+        # Fall back to the configured fixed list if the dynamic scan has
+        # never once succeeded (e.g. first tick after startup failed).
+        return self._dynamic_symbols or self.settings.futures_symbols
 
     async def _roll_daily_window_if_needed(self) -> None:
         state = await self.store.get_state()

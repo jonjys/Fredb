@@ -103,3 +103,24 @@ offers) so the leverage selector in the dashboard has full range — but
 there is no obligation to actually use the high end of it. Treat 25–50x as
 "available if you understand exactly what you're doing," not as a
 starting point.
+
+### Symbol selection: not limited to BTC/ETH
+
+`FUTURES_SYMBOL_MODE=dynamic` (the default) scans the top
+`FUTURES_DYNAMIC_TOP_N` (default 10) USDT-M perpetuals by 24h volume every
+5 minutes, instead of trading a fixed pair list — any sufficiently liquid
+coin (SOL, ADA, DOGE, a meme coin once it has real volume behind it, etc.)
+becomes tradeable automatically as its volume rank changes, with no config
+change needed.
+
+The important guard here is `FUTURES_MIN_24H_VOLUME_USD` (default $5M): a
+low-volume pair with leverage is a genuinely dangerous combination — wide
+spreads mean more slippage on both entry and the stop-loss, and thin order
+books are easier to move (intentionally or not), which can trigger
+liquidations that have nothing to do with the broader market. The volume
+floor exists specifically to keep the bot on pairs deep enough that a
+normal-sized order doesn't move the market against itself. Lower it only
+if you understand and accept that trade-off; don't set it to zero.
+
+Set `FUTURES_SYMBOL_MODE=fixed` with an explicit `FUTURES_SYMBOLS` list to
+go back to trading only specific pairs.
