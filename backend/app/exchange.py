@@ -41,6 +41,36 @@ def _retry():
     )
 
 
+# Binance's USDT-M futures also list tokenized-equity/commodity perpetuals
+# (e.g. tokenized stocks, gold) as plain linear USDT swaps — structurally
+# indistinguishable from a crypto perpetual in ccxt's unified market fields
+# (same swap/linear/quote flags). A dynamic "trade whatever has volume" scan
+# would happily leverage-trade those otherwise. The fix: cross-reference
+# against Binance's SPOT market list — spot listings require Binance to
+# actually custody the asset as crypto, which tokenized RWA perpetuals are
+# not, so "has a genuine spot market" is a reliable real-crypto filter.
+_SPOT_BASE_ASSET_CACHE: Dict[str, tuple] = {}
+_SPOT_BASE_ASSET_CACHE_SECONDS = 3600
+
+
+async def _fetch_known_crypto_base_assets(quote: str) -> set:
+    cached = _SPOT_BASE_ASSET_CACHE.get(quote)
+    if cached and time.time() - cached[0] < _SPOT_BASE_ASSET_CACHE_SECONDS:
+        return cached[1]
+    spot = ccxt_async.binance({"enableRateLimit": True})
+    try:
+        markets = await spot.load_markets()
+        bases = {
+            m["base"]
+            for m in markets.values()
+            if m.get("spot") and m.get("quote") == quote and m.get("active", True)
+        }
+    finally:
+        await spot.close()
+    _SPOT_BASE_ASSET_CACHE[quote] = (time.time(), bases)
+    return bases
+
+
 class ExchangeClient:
     """Thin, retrying async wrapper around a ccxt exchange instance.
 
@@ -88,14 +118,19 @@ class ExchangeClient:
     async def fetch_top_symbols_by_volume(
         self, quote: str, top_n: int, min_volume_usd: float
     ) -> List[str]:
-        """Linear USDT-margined perpetual swaps only, ranked by 24h quote
-        volume, above a liquidity floor. This is how the futures bot finds
-        tradeable pairs beyond a fixed BTC/ETH list without ending up
-        scanning (and risking leveraged capital on) thin, easily-manipulated
-        markets — a bot picking symbols with real volume behind them is very
-        different from a bot picking symbols by name.
+        """Linear USDT-margined *cryptocurrency* perpetual swaps only,
+        ranked by 24h quote volume, above a liquidity floor. This is how the
+        futures bot finds tradeable pairs beyond a fixed BTC/ETH list
+        without ending up scanning (and risking leveraged capital on) thin,
+        easily-manipulated markets — a bot picking symbols with real volume
+        behind them is very different from a bot picking symbols by name.
+
+        Also excludes tokenized-stock/commodity perpetuals (e.g. tokenized
+        equities, gold) that Binance lists under the same linear-USDT-swap
+        market shape as crypto — see _fetch_known_crypto_base_assets.
         """
         await self.exchange.load_markets()
+        known_crypto_bases = await _fetch_known_crypto_base_assets(quote)
         tickers = await self.exchange.fetch_tickers()
         candidates = []
         for symbol, ticker in tickers.items():
@@ -105,6 +140,8 @@ class ExchangeClient:
             if market.get("quote") != quote:
                 continue
             if not market.get("active", True):
+                continue
+            if market.get("base") not in known_crypto_bases:
                 continue
             quote_volume = ticker.get("quoteVolume") or 0
             if quote_volume < min_volume_usd:
