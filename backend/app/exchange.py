@@ -42,33 +42,56 @@ def _retry():
 
 
 # Binance's USDT-M futures also list tokenized-equity/commodity perpetuals
-# (e.g. tokenized stocks, gold) as plain linear USDT swaps — structurally
-# indistinguishable from a crypto perpetual in ccxt's unified market fields
-# (same swap/linear/quote flags). A dynamic "trade whatever has volume" scan
-# would happily leverage-trade those otherwise. The fix: cross-reference
-# against Binance's SPOT market list — spot listings require Binance to
-# actually custody the asset as crypto, which tokenized RWA perpetuals are
-# not, so "has a genuine spot market" is a reliable real-crypto filter.
-_SPOT_BASE_ASSET_CACHE: Dict[str, tuple] = {}
-_SPOT_BASE_ASSET_CACHE_SECONDS = 3600
+# (tokenized stocks, tokenized gold, leveraged-ETF tokens, ...) as plain
+# linear USDT swaps — structurally indistinguishable from a crypto
+# perpetual in ccxt's unified market fields (same swap/linear/quote flags),
+# and observed tickers like HEI/SPCX/SNDK/XAU/SOXL/MU/SKHYNIX/KORU don't
+# read as obviously non-crypto by name either. Two different attempts at
+# telling them apart algorithmically both failed in practice: cross-
+# referencing Binance's own spot listings (some of these are spot-listed on
+# Binance too) and cross-referencing CoinGecko's coin list (CoinGecko
+# tracks tokenized-RWA products as "crypto" too, plus its category system
+# doesn't line up with Binance's specific ticker naming). An allowlist is
+# the fix that's actually reliable: only trade base assets on this curated
+# list of well-established cryptocurrencies. It costs some coverage (a
+# brand-new legitimate coin needs to be added here manually), but a dynamic
+# scan that occasionally misses a new coin is a far smaller problem than
+# one that occasionally leverage-trades tokenized gold or SpaceX stock.
+# Extend via the FUTURES_EXTRA_ALLOWED_SYMBOLS env var, not by loosening
+# this filter's logic.
+KNOWN_CRYPTO_BASE_ASSETS = frozenset(
+    {
+        # Majors / large-cap L1s
+        "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "TRX", "AVAX", "DOT",
+        "LINK", "MATIC", "POL", "LTC", "BCH", "TON", "NEAR", "ICP", "APT", "SUI",
+        "ATOM", "XLM", "XMR", "ETC", "FIL", "ARB", "OP", "HBAR", "VET", "ALGO",
+        "SEI", "TIA", "INJ", "KAS", "STX", "FTM", "EGLD", "FLOW", "KDA", "CFX",
+        "NEO", "IOTA", "ONT", "ZIL", "QTUM", "WAVES", "KSM", "ROSE", "CELO",
+        "ONE", "ANKR", "OMG", "ZRX", "ENJ",
+        # DeFi
+        "UNI", "AAVE", "MKR", "GRT", "CRV", "SNX", "COMP", "YFI", "SUSHI",
+        "1INCH", "BAL", "LDO", "RPL", "FXS", "PENDLE", "ENS", "DYDX", "GMX",
+        "WOO", "CAKE", "QNT", "GMT",
+        # Gaming / metaverse / AI
+        "SAND", "MANA", "AXS", "GALA", "IMX", "APE", "THETA", "CHZ", "MASK",
+        "FET", "AGIX", "OCEAN", "RENDER", "RNDR", "WLD", "PYTH", "JTO", "JUP",
+        # Meme / high-volatility (explicitly requested — real volume required
+        # via the liquidity floor regardless)
+        "SHIB", "PEPE", "FLOKI", "BONK", "WIF", "BOME", "MEME", "MEW",
+        "POPCAT", "BRETT", "TURBO", "MOG", "NEIRO", "PNUT", "GOAT", "ACT",
+        "ORDI", "SATS", "DOGS", "NOT",
+        # Established mid-caps
+        "EOS", "XTZ", "DASH", "ZEC", "RUNE", "KAVA", "BAT", "HOT", "DENT",
+        "IOST", "WIN", "COTI", "SKL", "STORJ", "OGN", "BAND", "REN", "KNC",
+        "LRC", "CVC", "POWR", "REQ", "STMX", "CTSI", "AR", "ROSE", "GLMR",
+        "MOVR", "ASTR", "MINA", "CELR", "SXP", "ALPHA", "TWT",
+    }
+)
 
 
-async def _fetch_known_crypto_base_assets(quote: str) -> set:
-    cached = _SPOT_BASE_ASSET_CACHE.get(quote)
-    if cached and time.time() - cached[0] < _SPOT_BASE_ASSET_CACHE_SECONDS:
-        return cached[1]
-    spot = ccxt_async.binance({"enableRateLimit": True})
-    try:
-        markets = await spot.load_markets()
-        bases = {
-            m["base"]
-            for m in markets.values()
-            if m.get("spot") and m.get("quote") == quote and m.get("active", True)
-        }
-    finally:
-        await spot.close()
-    _SPOT_BASE_ASSET_CACHE[quote] = (time.time(), bases)
-    return bases
+def _load_extra_allowed_symbols(settings: Settings) -> frozenset:
+    extra = getattr(settings, "futures_extra_allowed_symbols_csv", "") or ""
+    return frozenset(s.strip().upper() for s in extra.split(",") if s.strip())
 
 
 class ExchangeClient:
@@ -127,10 +150,10 @@ class ExchangeClient:
 
         Also excludes tokenized-stock/commodity perpetuals (e.g. tokenized
         equities, gold) that Binance lists under the same linear-USDT-swap
-        market shape as crypto — see _fetch_known_crypto_base_assets.
+        market shape as crypto — see KNOWN_CRYPTO_BASE_ASSETS.
         """
         await self.exchange.load_markets()
-        known_crypto_bases = await _fetch_known_crypto_base_assets(quote)
+        allowed_bases = KNOWN_CRYPTO_BASE_ASSETS | _load_extra_allowed_symbols(self.settings)
         tickers = await self.exchange.fetch_tickers()
         candidates = []
         for symbol, ticker in tickers.items():
@@ -141,7 +164,8 @@ class ExchangeClient:
                 continue
             if not market.get("active", True):
                 continue
-            if market.get("base") not in known_crypto_bases:
+            base = market.get("base") or ""
+            if base.upper() not in allowed_bases:
                 continue
             quote_volume = ticker.get("quoteVolume") or 0
             if quote_volume < min_volume_usd:

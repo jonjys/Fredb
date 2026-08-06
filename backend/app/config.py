@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     # risk becomes a serious concern, while still being low enough to admit
     # popular altcoins and meme coins once they have genuine volume.
     futures_min_24h_volume_usd: float = 5_000_000.0
+    # Add tickers here (comma-separated) if a legitimate coin isn't on the
+    # built-in allowlist in exchange.py's KNOWN_CRYPTO_BASE_ASSETS — do not
+    # widen that allowlist's matching logic itself, extend the list.
+    futures_extra_allowed_symbols_csv: str = Field(
+        default="", validation_alias="FUTURES_EXTRA_ALLOWED_SYMBOLS"
+    )
     futures_leverage_default: float = 5.0
     futures_max_leverage: float = 50.0
     futures_paper_starting_balance: float = 1000.0
