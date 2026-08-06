@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import logging
 import os
 import time
 from typing import List, Optional, Type
@@ -20,6 +21,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import Base, BotState, EquitySnapshot, Position, Trade
+
+logger = logging.getLogger("tradingbot.state_store")
 
 
 class StateStore:
@@ -41,8 +44,57 @@ class StateStore:
         self.BotState = bot_state_cls
         self.EquitySnapshot = equity_cls
 
+    def _ensure_schema(self) -> None:
+        """Add any model columns missing from the actual SQLite tables.
+
+        Base.metadata.create_all() only creates tables that don't exist yet
+        — it never alters an existing table when the model gains a new
+        column, which is exactly what happens when this app evolves after
+        its first deploy (e.g. FuturesBotState.leverage_mode added after
+        futures_bot_state already existed on a live volume). This is a
+        deliberately small stand-in for a real migration tool: additive
+        (ADD COLUMN) only, safe to run on every startup, no-op when the
+        schema already matches.
+        """
+        with self.engine.connect() as conn:
+            for model in (self.Position, self.Trade, self.BotState, self.EquitySnapshot):
+                table_name = model.__tablename__
+                existing_columns = {
+                    row[1]  # PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
+                    for row in conn.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
+                }
+                if not existing_columns:
+                    continue  # table doesn't exist yet — create_all() already handled it fully
+                for column in model.__table__.columns:
+                    if column.name in existing_columns:
+                        continue
+                    ddl = self._sqlite_add_column_ddl(column)
+                    conn.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+                    logger.warning("Migrated %s: added missing column %s", table_name, column.name)
+            conn.commit()
+
+    @staticmethod
+    def _sqlite_add_column_ddl(column) -> str:
+        py_type = column.type.python_type
+        if py_type is bool:
+            sqlite_type, default = "BOOLEAN", column.default.arg if column.default else False
+            default_sql = "1" if default else "0"
+        elif py_type is int:
+            sqlite_type, default = "INTEGER", column.default.arg if column.default else 0
+            default_sql = str(default) if not callable(default) else "0"
+        elif py_type is float:
+            sqlite_type, default = "REAL", column.default.arg if column.default else 0.0
+            default_sql = str(default) if not callable(default) else "0.0"
+        else:
+            sqlite_type = "TEXT"
+            default = column.default.arg if column.default else ""
+            default = "" if callable(default) else default
+            default_sql = "'{}'".format(str(default).replace("'", "''"))
+        return f"{column.name} {sqlite_type} DEFAULT {default_sql}"
+
     def init(self, paper_starting_balance: float) -> None:
         Base.metadata.create_all(self.engine)
+        self._ensure_schema()
         with self.Session() as session:
             state = session.get(self.BotState, 1)
             if state is None:
