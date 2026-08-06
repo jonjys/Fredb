@@ -65,6 +65,17 @@ trailing stop so winners can run
 starting point, not a guarantee of profitability — see
 [docs/RISK_SETTINGS.md](docs/RISK_SETTINGS.md).
 
+### Futures (leveraged trading)
+
+An opt-in second bot (`FUTURES_ENABLED=true`) trades the same strategy
+against Binance USDT-M perpetual futures with selectable leverage
+(2x–50x, dashboard's Futures tab). Off by default. Risk per trade stays
+identical to spot regardless of leverage — leverage only changes margin
+efficiency — and requested leverage is always clamped down so the
+stop-loss fires before the exchange's liquidation engine would. Read
+[docs/RISK_SETTINGS.md](docs/RISK_SETTINGS.md#futures-leveraged-trading)
+before turning this on; it is materially higher risk than spot.
+
 ## Quick start (local, paper mode)
 
 ```bash

@@ -96,3 +96,71 @@ class EquityPointOut(BaseModel):
     timestamp: float
     equity: float
     realized_pnl_today: float
+
+
+# ---- Futures --------------------------------------------------------------
+
+
+class FuturesStatusResponse(BaseModel):
+    enabled: bool
+    mode: str
+    exchange: str
+    symbols: List[str]
+    running: bool
+    kill_switch: bool
+    kill_switch_reason: str
+    equity: float
+    quote_balance: float
+    daily_start_equity: float
+    daily_pnl: float
+    daily_pnl_pct: float
+    open_positions_count: int
+    max_concurrent_positions: int
+    leverage_default: float
+    max_leverage: float
+
+
+class FuturesPositionOut(BaseModel):
+    id: int
+    symbol: str
+    side: str
+    status: str
+    leverage: float
+    entry_price: float
+    qty: float
+    margin_used: float
+    liquidation_price: float
+    stop_loss_price: float
+    take_profit_price: float
+    trailing_active: bool
+    trailing_high: float
+    current_price: Optional[float] = None
+    unrealized_pnl_quote: Optional[float] = None
+    unrealized_pnl_pct: Optional[float] = None
+    opened_at: float
+
+    class Config:
+        from_attributes = True
+
+
+class FuturesTradeOut(BaseModel):
+    id: int
+    symbol: str
+    side: str
+    status: str
+    leverage: float
+    entry_price: float
+    exit_price: float
+    qty: float
+    pnl_quote: float
+    pnl_pct: float
+    close_reason: str
+    opened_at: float
+    closed_at: float
+
+    class Config:
+        from_attributes = True
+
+
+class FuturesLeverageUpdate(BaseModel):
+    leverage: float

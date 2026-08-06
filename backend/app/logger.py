@@ -16,6 +16,7 @@ class LogEntry:
     timestamp: float
     level: str
     message: str
+    logger_name: str = ""
 
 
 class LogBuffer:
@@ -25,14 +26,18 @@ class LogBuffer:
         self._buf: Deque[LogEntry] = deque(maxlen=maxlen)
         self._lock = Lock()
 
-    def add(self, level: str, message: str) -> None:
+    def add(self, level: str, message: str, logger_name: str = "") -> None:
         with self._lock:
-            self._buf.append(LogEntry(timestamp=time.time(), level=level, message=message))
+            self._buf.append(
+                LogEntry(timestamp=time.time(), level=level, message=message, logger_name=logger_name)
+            )
 
-    def recent(self, limit: int = 200) -> List[LogEntry]:
+    def recent(self, limit: int = 200, logger_prefix: str = "") -> List[LogEntry]:
         with self._lock:
-            items = list(self._buf)[-limit:]
-        return items
+            items = list(self._buf)
+        if logger_prefix:
+            items = [e for e in items if e.logger_name.startswith(logger_prefix)]
+        return items[-limit:]
 
 
 log_buffer = LogBuffer()
@@ -41,7 +46,7 @@ log_buffer = LogBuffer()
 class BufferHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            log_buffer.add(record.levelname, self.format(record))
+            log_buffer.add(record.levelname, self.format(record), logger_name=record.name)
         except Exception:
             pass
 

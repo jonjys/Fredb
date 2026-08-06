@@ -25,6 +25,24 @@ class SizingResult:
     risk_amount_quote: float
 
 
+@dataclass
+class FuturesSizingResult(SizingResult):
+    leverage: float
+    margin_required_quote: float
+    liquidation_price: float
+
+
+# Conservative flat estimate of Binance USDT-M maintenance margin rate at
+# moderate notional (actual rate is tiered and gets worse at high notional —
+# this is deliberately pessimistic so the safety clamp below stays safe).
+MAINTENANCE_MARGIN_RATE_ESTIMATE = 0.005
+
+# Our stop-loss must trigger within this fraction of the estimated
+# liquidation distance, not right at it — leaves a buffer for slippage,
+# funding drift, and poll-interval latency on the trailing-stop leg.
+LEVERAGE_SAFETY_FACTOR = 0.7
+
+
 class RiskManager:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -90,6 +108,69 @@ class RiskManager:
                 f"{self.settings.max_daily_loss_pct:.2f}% — trading halted for today"
             )
         return None
+
+    # ---- Leverage (futures) --------------------------------------------------
+    def max_safe_leverage(
+        self,
+        stop_distance_pct: float,
+        maintenance_margin_rate: float = MAINTENANCE_MARGIN_RATE_ESTIMATE,
+        safety_factor: float = LEVERAGE_SAFETY_FACTOR,
+    ) -> float:
+        """The highest leverage at which our stop-loss still triggers safely
+        before the exchange's own liquidation engine would close the position.
+
+        Liquidation happens (approximately, ignoring funding/fees) once losses
+        eat through the margin down to the maintenance margin threshold:
+            liq_distance_pct ~= 1/leverage - maintenance_margin_rate
+        We require stop_distance_pct <= safety_factor * liq_distance_pct, i.e.
+        our stop must fire well inside that distance. Solving for leverage:
+            leverage <= safety_factor / (stop_distance_pct + safety_factor * mmr)
+        """
+        stop_distance = stop_distance_pct / 100
+        denom = stop_distance + safety_factor * maintenance_margin_rate
+        if denom <= 0:
+            return 1.0
+        return max(1.0, safety_factor / denom)
+
+    def size_position_leveraged(
+        self,
+        equity: float,
+        entry_price: float,
+        atr: float,
+        atr_pct: float,
+        requested_leverage: float,
+        max_leverage_cap: float,
+    ) -> Optional[FuturesSizingResult]:
+        """Same $-risk-based qty/stop/TP as spot (leverage does not change how
+        much you risk per trade) — leverage only changes margin efficiency.
+        The requested leverage is clamped down, never up, by both the
+        liquidation-safety check and the configured hard cap.
+        """
+        base = self.size_position(equity, entry_price, atr, atr_pct)
+        if base is None:
+            return None
+
+        stop_distance_pct = abs(entry_price - base.stop_loss_price) / entry_price * 100
+        safe_max_leverage = self.max_safe_leverage(stop_distance_pct)
+        leverage = min(requested_leverage, safe_max_leverage, max_leverage_cap)
+        leverage = max(1.0, round(leverage, 2))
+
+        notional = base.qty * entry_price
+        margin_required = notional / leverage
+        liquidation_price = entry_price * (
+            1 - (1 / leverage) + MAINTENANCE_MARGIN_RATE_ESTIMATE
+        )
+
+        return FuturesSizingResult(
+            qty=base.qty,
+            entry_price=entry_price,
+            stop_loss_price=base.stop_loss_price,
+            take_profit_price=base.take_profit_price,
+            risk_amount_quote=base.risk_amount_quote,
+            leverage=leverage,
+            margin_required_quote=margin_required,
+            liquidation_price=liquidation_price,
+        )
 
     # ---- Fees / slippage --------------------------------------------------
     def round_trip_cost_pct(self) -> float:
