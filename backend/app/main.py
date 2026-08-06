@@ -247,11 +247,12 @@ async def get_futures_status():
     open_positions = await futures_store.get_open_positions()
     daily_pnl = equity - state.daily_start_equity
     daily_pnl_pct = (daily_pnl / state.daily_start_equity * 100) if state.daily_start_equity else 0.0
+    active_symbols = await futures_bot._get_active_symbols()
     return FuturesStatusResponse(
         enabled=True,
         mode=settings.futures_mode,
         exchange=settings.futures_exchange_id,
-        symbols=settings.futures_symbols,
+        symbols=active_symbols,
         running=state.running,
         kill_switch=state.kill_switch,
         kill_switch_reason=state.kill_switch_reason,

@@ -85,6 +85,35 @@ class ExchangeClient:
         return float(ticker["last"])
 
     @_retry()
+    async def fetch_top_symbols_by_volume(
+        self, quote: str, top_n: int, min_volume_usd: float
+    ) -> List[str]:
+        """Linear USDT-margined perpetual swaps only, ranked by 24h quote
+        volume, above a liquidity floor. This is how the futures bot finds
+        tradeable pairs beyond a fixed BTC/ETH list without ending up
+        scanning (and risking leveraged capital on) thin, easily-manipulated
+        markets — a bot picking symbols with real volume behind them is very
+        different from a bot picking symbols by name.
+        """
+        await self.exchange.load_markets()
+        tickers = await self.exchange.fetch_tickers()
+        candidates = []
+        for symbol, ticker in tickers.items():
+            market = self.exchange.markets.get(symbol)
+            if not market or not market.get("swap") or not market.get("linear"):
+                continue
+            if market.get("quote") != quote:
+                continue
+            if not market.get("active", True):
+                continue
+            quote_volume = ticker.get("quoteVolume") or 0
+            if quote_volume < min_volume_usd:
+                continue
+            candidates.append((symbol, quote_volume))
+        candidates.sort(key=lambda pair: pair[1], reverse=True)
+        return [symbol for symbol, _ in candidates[:top_n]]
+
+    @_retry()
     async def fetch_balance_quote(self, quote_currency: str) -> float:
         balance = await self.exchange.fetch_balance()
         return float(balance.get("free", {}).get(quote_currency, 0.0))
@@ -301,6 +330,12 @@ class FuturesBroker(abc.ABC):
     async def get_quote_balance(self) -> float: ...
 
     @abc.abstractmethod
+    async def get_top_symbols(self, top_n: int, min_volume_usd: float) -> List[str]:
+        """Discover a tradeable symbol universe by 24h volume, instead of a
+        fixed list — see ExchangeClient.fetch_top_symbols_by_volume."""
+        ...
+
+    @abc.abstractmethod
     async def open_long(
         self, symbol: str, qty: float, leverage: float, stop_loss_price: float, take_profit_price: float
     ) -> FuturesFill: ...
@@ -361,6 +396,11 @@ class RealFuturesBroker(FuturesBroker):
 
     async def get_quote_balance(self) -> float:
         return await self.client.fetch_balance_quote(self._quote_currency)
+
+    async def get_top_symbols(self, top_n: int, min_volume_usd: float) -> List[str]:
+        return await self.client.fetch_top_symbols_by_volume(
+            self._quote_currency, top_n, min_volume_usd
+        )
 
     async def open_long(
         self, symbol: str, qty: float, leverage: float, stop_loss_price: float, take_profit_price: float
@@ -443,6 +483,9 @@ class PaperFuturesBroker(FuturesBroker):
 
     async def get_quote_balance(self) -> float:
         return self.quote_balance
+
+    async def get_top_symbols(self, top_n: int, min_volume_usd: float) -> List[str]:
+        return await self.client.fetch_top_symbols_by_volume("USDT", top_n, min_volume_usd)
 
     def _simulate_fee_and_slippage(self, price: float, side: str) -> float:
         slip = self.settings.slippage_buffer_pct / 100

@@ -53,6 +53,20 @@ class Settings(BaseSettings):
     futures_symbols_csv: str = Field(
         default="BTC/USDT:USDT,ETH/USDT:USDT", validation_alias="FUTURES_SYMBOLS"
     )
+    # "dynamic" scans the top-N most liquid USDT-M perpetuals by 24h volume
+    # instead of a fixed list, so the bot isn't limited to BTC/ETH — any
+    # sufficiently liquid pair (ADA, SOL, DOGE, meme coins once they have
+    # real volume, etc.) becomes tradeable automatically. "fixed" uses
+    # futures_symbols_csv above, unchanged from the original behavior.
+    futures_symbol_mode: Literal["fixed", "dynamic"] = "dynamic"
+    futures_dynamic_top_n: int = 10
+    # Liquidity floor for the dynamic scan, in 24h USDT volume — this is the
+    # main guard against trading thin, easily-manipulated markets with
+    # leverage. Binance's most liquid pairs (BTC/ETH) trade billions/day;
+    # $5M is a conservative floor well above where slippage/manipulation
+    # risk becomes a serious concern, while still being low enough to admit
+    # popular altcoins and meme coins once they have genuine volume.
+    futures_min_24h_volume_usd: float = 5_000_000.0
     futures_leverage_default: float = 5.0
     futures_max_leverage: float = 50.0
     futures_paper_starting_balance: float = 1000.0
