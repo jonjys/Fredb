@@ -165,6 +165,27 @@ class FuturesTradeOut(BaseModel):
         from_attributes = True
 
 
+class PerformanceStatsOut(BaseModel):
+    total_trades: int
+    wins: int
+    losses: int
+    win_rate_pct: float
+    net_pnl_quote: float
+    gross_profit: float
+    gross_loss: float
+    profit_factor: Optional[float] = None
+    avg_win_quote: float
+    avg_loss_quote: float
+    best_trade_quote: float
+    worst_trade_quote: float
+    current_streak: int
+    best_win_streak: int
+    long_trades: int
+    short_trades: int
+    long_win_rate_pct: Optional[float] = None
+    short_win_rate_pct: Optional[float] = None
+
+
 class FuturesLeverageUpdate(BaseModel):
     mode: Optional[str] = None  # "auto" | "manual"
     leverage: Optional[float] = None  # required when setting a manual value

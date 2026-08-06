@@ -71,6 +71,27 @@ export interface EquityPointOut {
   realized_pnl_today: number;
 }
 
+export interface PerformanceStatsOut {
+  total_trades: number;
+  wins: number;
+  losses: number;
+  win_rate_pct: number;
+  net_pnl_quote: number;
+  gross_profit: number;
+  gross_loss: number;
+  profit_factor: number | null;
+  avg_win_quote: number;
+  avg_loss_quote: number;
+  best_trade_quote: number;
+  worst_trade_quote: number;
+  current_streak: number;
+  best_win_streak: number;
+  long_trades: number;
+  short_trades: number;
+  long_win_rate_pct: number | null;
+  short_win_rate_pct: number | null;
+}
+
 // ---- Futures ----------------------------------------------------------
 
 export interface FuturesStatusResponse {

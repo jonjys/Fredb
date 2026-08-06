@@ -46,6 +46,19 @@ AUTO_LEVERAGE_ATR_LOW_PCT = 0.15
 AUTO_LEVERAGE_ATR_HIGH_PCT = 1.0
 
 
+def _directional_pnl(side: str, entry_price: float, current_price: float, qty: float) -> float:
+    """Price PnL in quote currency, before fees.
+
+    A long gains when price rises; a short gains when it falls. Every place
+    that turns a price difference into money goes through this, so the sign
+    convention can't drift between the equity calculation and the realized
+    PnL written to the trade record.
+    """
+    if side == "short":
+        return (entry_price - current_price) * qty
+    return (current_price - entry_price) * qty
+
+
 class FuturesTradingBot:
     def __init__(self, settings: Settings, store: StateStore):
         self.settings = settings
@@ -254,7 +267,9 @@ class FuturesTradingBot:
             try:
                 price = await self.broker.get_price(position.symbol)
                 self._last_prices[position.symbol] = price
-                unrealized_pnl = (price - position.entry_price) * position.qty
+                unrealized_pnl = _directional_pnl(
+                    position.side, position.entry_price, price, position.qty
+                )
                 positions_equity += position.margin_used + unrealized_pnl
             except Exception:
                 logger.warning("Could not fetch price for %s, using entry price", position.symbol)
@@ -271,12 +286,13 @@ class FuturesTradingBot:
             return
 
         signal = self.strategy.generate_signal(df)
-        if signal.action != "buy":
+        if signal.action not in ("long", "short"):
             return
+        side = signal.action
 
         sizing = self.risk.size_position_leveraged(
             equity, signal.close, signal.atr, signal.atr_pct, requested_leverage,
-            self.settings.futures_max_leverage,
+            self.settings.futures_max_leverage, side=side,
         )
         if sizing is None or sizing.qty <= 0:
             return
@@ -290,16 +306,17 @@ class FuturesTradingBot:
             return
 
         try:
-            fill = await self.broker.open_long(
-                symbol, sizing.qty, sizing.leverage, sizing.stop_loss_price, sizing.take_profit_price
+            fill = await self.broker.open_position(
+                symbol, side, sizing.qty, sizing.leverage,
+                sizing.stop_loss_price, sizing.take_profit_price,
             )
         except Exception:
-            logger.exception("Futures buy order failed for %s", symbol)
+            logger.exception("Futures %s entry order failed for %s", side, symbol)
             return
 
         position = FuturesPosition(
             symbol=symbol,
-            side="long",
+            side=side,
             status="open",
             leverage=sizing.leverage,
             entry_price=fill.price,
@@ -319,7 +336,7 @@ class FuturesTradingBot:
             FuturesTrade(
                 position_id=position.id,
                 symbol=symbol,
-                side="buy",
+                side="sell" if side == "short" else "buy",
                 trade_type="entry",
                 price=fill.price,
                 qty=fill.qty,
@@ -328,10 +345,11 @@ class FuturesTradingBot:
             )
         )
         logger.info(
-            "OPENED %s qty=%.6f entry=%.4f leverage=%sx margin=%.2f SL=%.4f "
+            "OPENED %s %s qty=%.6f entry=%.4f leverage=%sx margin=%.2f SL=%.4f "
             "(liq~%.4f) TP=%.4f (%s)",
-            symbol, fill.qty, fill.price, sizing.leverage, sizing.margin_required_quote,
-            sizing.stop_loss_price, sizing.liquidation_price, sizing.take_profit_price, signal.reason,
+            side.upper(), symbol, fill.qty, fill.price, sizing.leverage,
+            sizing.margin_required_quote, sizing.stop_loss_price, sizing.liquidation_price,
+            sizing.take_profit_price, signal.reason,
         )
 
     async def _manage_position(self, position: FuturesPosition) -> None:
@@ -343,21 +361,39 @@ class FuturesTradingBot:
         self._last_prices[position.symbol] = price
 
         trailing_pct = self.settings.trailing_stop_pct / 100
+        is_short = position.side == "short"
 
-        if price <= position.stop_loss_price:
+        # Everything directional mirrors for a short: the stop sits above
+        # entry (hit when price rises), the take-profit below (hit when price
+        # falls), and the trailing watermark tracks the LOW rather than the
+        # high. `trailing_high` stores whichever watermark applies — the
+        # column name is from the long-only era; for a short it holds the
+        # best (lowest) price seen.
+        stop_hit = price >= position.stop_loss_price if is_short else price <= position.stop_loss_price
+        if stop_hit:
             await self._close_position(position, "stop_loss")
             return
 
-        if not position.trailing_active and price >= position.take_profit_price:
-            new_high = max(position.trailing_high, price)
-            trailing_stop_price = new_high * (1 - trailing_pct)
+        def watermark(current_watermark: float) -> float:
+            return min(current_watermark, price) if is_short else max(current_watermark, price)
+
+        def trailing_stop_from(mark: float) -> float:
+            return mark * (1 + trailing_pct) if is_short else mark * (1 - trailing_pct)
+
+        tp_hit = (
+            price <= position.take_profit_price if is_short else price >= position.take_profit_price
+        )
+        if not position.trailing_active and tp_hit:
+            new_mark = watermark(position.trailing_high)
+            trailing_stop_price = trailing_stop_from(new_mark)
             try:
                 # Switching from "fixed TP" to "let it ride with a trailing
                 # stop": cancel the fixed take-profit order first so it can't
-                # fire underneath the new, higher trailing stop.
+                # fire on the wrong side of the new trailing stop.
                 await self.broker.cancel_order(position.symbol, position.take_profit_order_id)
                 new_stop_id = await self.broker.update_stop_order(
-                    position.symbol, position.qty, position.stop_order_id, trailing_stop_price
+                    position.symbol, position.side, position.qty,
+                    position.stop_order_id, trailing_stop_price,
                 )
             except Exception:
                 logger.exception("Failed to move stop order to trailing level for %s", position.symbol)
@@ -365,39 +401,48 @@ class FuturesTradingBot:
             await self.store.update_position(
                 position.id,
                 trailing_active=True,
-                trailing_high=new_high,
+                trailing_high=new_mark,
                 stop_loss_price=trailing_stop_price,
                 stop_order_id=new_stop_id,
                 take_profit_order_id="",
             )
             logger.info(
-                "%s hit take-profit trigger (%.4f) — trailing stop activated at %.4f",
-                position.symbol, price, trailing_stop_price,
+                "%s %s hit take-profit trigger (%.4f) — trailing stop activated at %.4f",
+                position.side.upper(), position.symbol, price, trailing_stop_price,
             )
             return
 
         if position.trailing_active:
-            new_high = max(position.trailing_high, price)
-            new_trailing_stop = new_high * (1 - trailing_pct)
-            if new_high > position.trailing_high and new_trailing_stop > position.stop_loss_price:
+            new_mark = watermark(position.trailing_high)
+            new_trailing_stop = trailing_stop_from(new_mark)
+            # Ratchet one way only: a trailing stop must never loosen. For a
+            # long that means the stop only moves up, for a short only down.
+            improved = (
+                new_mark < position.trailing_high and new_trailing_stop < position.stop_loss_price
+                if is_short
+                else new_mark > position.trailing_high and new_trailing_stop > position.stop_loss_price
+            )
+            if improved:
                 try:
                     new_stop_id = await self.broker.update_stop_order(
-                        position.symbol, position.qty, position.stop_order_id, new_trailing_stop
+                        position.symbol, position.side, position.qty,
+                        position.stop_order_id, new_trailing_stop,
                     )
                 except Exception:
                     logger.exception("Failed to ratchet trailing stop for %s", position.symbol)
                     new_stop_id = position.stop_order_id
                 await self.store.update_position(
                     position.id,
-                    trailing_high=new_high,
+                    trailing_high=new_mark,
                     stop_loss_price=new_trailing_stop,
                     stop_order_id=new_stop_id,
                 )
 
     async def _close_position(self, position: FuturesPosition, reason: str) -> None:
         try:
-            fill = await self.broker.close_long(
+            fill = await self.broker.close_position(
                 position.symbol,
+                position.side,
                 position.qty,
                 position.entry_price,
                 position.leverage,
@@ -405,10 +450,13 @@ class FuturesTradingBot:
                 position.take_profit_order_id,
             )
         except Exception:
-            logger.exception("Futures sell order failed for %s — will retry next tick", position.symbol)
+            logger.exception(
+                "Futures exit order failed for %s — will retry next tick", position.symbol
+            )
             return
 
-        pnl_quote = (fill.price - position.entry_price) * fill.qty - fill.fee_quote
+        pnl_quote = _directional_pnl(position.side, position.entry_price, fill.price, fill.qty)
+        pnl_quote -= fill.fee_quote
         pnl_pct = (pnl_quote / position.margin_used * 100) if position.margin_used else 0.0
 
         await self.store.close_position(position.id, fill.price, pnl_quote, pnl_pct, reason)
@@ -416,7 +464,7 @@ class FuturesTradingBot:
             FuturesTrade(
                 position_id=position.id,
                 symbol=position.symbol,
-                side="sell",
+                side="buy" if position.side == "short" else "sell",
                 trade_type="exit",
                 price=fill.price,
                 qty=fill.qty,
@@ -425,6 +473,7 @@ class FuturesTradingBot:
             )
         )
         logger.info(
-            "CLOSED %s qty=%.6f exit=%.4f pnl=%.4f (%.2f%% on margin) leverage=%sx reason=%s",
-            position.symbol, fill.qty, fill.price, pnl_quote, pnl_pct, position.leverage, reason,
+            "CLOSED %s %s qty=%.6f exit=%.4f pnl=%.4f (%.2f%% on margin) leverage=%sx reason=%s",
+            position.side.upper(), position.symbol, fill.qty, fill.price, pnl_quote, pnl_pct,
+            position.leverage, reason,
         )

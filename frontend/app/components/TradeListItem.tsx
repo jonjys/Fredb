@@ -36,7 +36,13 @@ export default function TradeListItem({ trade }: { trade: TradeListItemData }) {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate font-semibold text-white">{trade.symbol}</span>
-            <span className="shrink-0 rounded border border-border bg-surfaceAlt px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
+            <span
+              className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                trade.side === "short"
+                  ? "border-negative/30 bg-negative/10 text-negative"
+                  : "border-positive/30 bg-positive/10 text-positive"
+              }`}
+            >
               {trade.side || "long"}
             </span>
             {trade.leverage !== undefined && (

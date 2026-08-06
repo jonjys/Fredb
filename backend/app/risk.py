@@ -140,11 +140,18 @@ class RiskManager:
         atr_pct: float,
         requested_leverage: float,
         max_leverage_cap: float,
+        side: str = "long",
     ) -> Optional[FuturesSizingResult]:
-        """Same $-risk-based qty/stop/TP as spot (leverage does not change how
-        much you risk per trade) — leverage only changes margin efficiency.
-        The requested leverage is clamped down, never up, by both the
+        """Same $-risk-based qty as spot (leverage does not change how much
+        you risk per trade) — leverage only changes margin efficiency. The
+        requested leverage is clamped down, never up, by both the
         liquidation-safety check and the configured hard cap.
+
+        For a short everything price-directional flips: the stop sits ABOVE
+        entry, the take-profit BELOW, and liquidation is ABOVE (a short is
+        liquidated when price rises against it). Distances are identical to
+        the long case, so risk-per-trade and the leverage-safety margin are
+        symmetric between the two directions.
         """
         base = self.size_position(equity, entry_price, atr, atr_pct)
         if base is None:
@@ -157,15 +164,25 @@ class RiskManager:
 
         notional = base.qty * entry_price
         margin_required = notional / leverage
-        liquidation_price = entry_price * (
-            1 - (1 / leverage) + MAINTENANCE_MARGIN_RATE_ESTIMATE
-        )
+
+        stop_distance = stop_distance_pct / 100
+        take_profit_distance = self.settings.take_profit_pct / 100
+        liq_distance = (1 / leverage) - MAINTENANCE_MARGIN_RATE_ESTIMATE
+
+        if side == "short":
+            stop_loss_price = entry_price * (1 + stop_distance)
+            take_profit_price = entry_price * (1 - take_profit_distance)
+            liquidation_price = entry_price * (1 + liq_distance)
+        else:
+            stop_loss_price = entry_price * (1 - stop_distance)
+            take_profit_price = entry_price * (1 + take_profit_distance)
+            liquidation_price = entry_price * (1 - liq_distance)
 
         return FuturesSizingResult(
             qty=base.qty,
             entry_price=entry_price,
-            stop_loss_price=base.stop_loss_price,
-            take_profit_price=base.take_profit_price,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
             risk_amount_quote=base.risk_amount_quote,
             leverage=leverage,
             margin_required_quote=margin_required,

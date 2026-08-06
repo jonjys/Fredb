@@ -1,7 +1,15 @@
 "use client";
 
 import { usePoll } from "@/lib/usePoll";
-import { EquityPointOut, LogEntryOut, PositionOut, StatusResponse, TradeOut } from "@/lib/types";
+import {
+  EquityPointOut,
+  LogEntryOut,
+  PerformanceStatsOut,
+  PositionOut,
+  StatusResponse,
+  TradeOut,
+} from "@/lib/types";
+import PerformancePanel from "@/components/PerformancePanel";
 import StatusBar from "@/components/StatusBar";
 import BalanceCard from "@/components/BalanceCard";
 import EquityChart from "@/components/EquityChart";
@@ -19,6 +27,7 @@ export default function SpotDashboard() {
   const { data: trades } = usePoll<TradeOut[]>("/api/trades", 8000);
   const { data: logs } = usePoll<LogEntryOut[]>("/api/logs", 4000);
   const { data: equity } = usePoll<EquityPointOut[]>("/api/equity", 10000);
+  const { data: stats } = usePoll<PerformanceStatsOut>("/api/stats", 8000);
 
   return (
     <div className="space-y-6">
@@ -29,6 +38,7 @@ export default function SpotDashboard() {
       )}
       <StatusBar status={status} onChanged={refetch} />
       <BalanceCard status={status} />
+      <PerformancePanel stats={stats} />
       <EquityChart points={equity} />
       <PositionsTable positions={positions} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

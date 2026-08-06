@@ -36,7 +36,20 @@ export default function FuturesPositionsTable({
             )}
             {(positions ?? []).map((p) => (
               <tr key={p.id} className="border-t border-border">
-                <td className="py-2 pr-4 font-medium">{p.symbol}</td>
+                <td className="py-2 pr-4">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium">{p.symbol}</span>
+                    <span
+                      className={`rounded border px-1 py-0.5 text-[10px] font-semibold uppercase ${
+                        p.side === "short"
+                          ? "border-negative/30 bg-negative/10 text-negative"
+                          : "border-positive/30 bg-positive/10 text-positive"
+                      }`}
+                    >
+                      {p.side}
+                    </span>
+                  </div>
+                </td>
                 <td className="py-2 pr-4 text-accent">{p.leverage}x</td>
                 <td className="py-2 pr-4">${fmtMoney(p.entry_price, 4)}</td>
                 <td className="py-2 pr-4">{p.current_price ? `$${fmtMoney(p.current_price, 4)}` : "—"}</td>

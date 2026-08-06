@@ -7,7 +7,9 @@ import {
   FuturesStatusResponse,
   FuturesTradeOut,
   LogEntryOut,
+  PerformanceStatsOut,
 } from "@/lib/types";
+import PerformancePanel from "@/components/PerformancePanel";
 import FuturesStatusBar from "@/components/FuturesStatusBar";
 import FuturesBalanceCard from "@/components/FuturesBalanceCard";
 import EquityChart from "@/components/EquityChart";
@@ -25,6 +27,7 @@ export default function FuturesDashboard() {
   const { data: trades } = usePoll<FuturesTradeOut[]>("/api/futures/trades", 8000);
   const { data: logs } = usePoll<LogEntryOut[]>("/api/futures/logs", 4000);
   const { data: equity } = usePoll<EquityPointOut[]>("/api/futures/equity", 10000);
+  const { data: stats } = usePoll<PerformanceStatsOut>("/api/futures/stats", 8000);
 
   async function changeLeverage(leverage: number) {
     await fetch("/api/futures/leverage", {
@@ -63,6 +66,7 @@ export default function FuturesDashboard() {
       )}
       <FuturesStatusBar status={status} onChanged={refetch} />
       <FuturesBalanceCard status={status} />
+      <PerformancePanel stats={stats} />
       <LeverageSelector
         current={status?.leverage_default ?? 8}
         mode={status?.leverage_mode ?? "auto"}

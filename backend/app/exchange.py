@@ -397,13 +397,23 @@ class FuturesBroker(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def open_long(
-        self, symbol: str, qty: float, leverage: float, stop_loss_price: float, take_profit_price: float
-    ) -> FuturesFill: ...
+    async def open_position(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        leverage: float,
+        stop_loss_price: float,
+        take_profit_price: float,
+    ) -> FuturesFill:
+        """side is "long" or "short". A long enters with a market buy and is
+        protected by sell-side stop/TP orders; a short is the exact mirror
+        (market sell in, buy-side stop above / TP below)."""
+        ...
 
     @abc.abstractmethod
     async def update_stop_order(
-        self, symbol: str, qty: float, old_order_id: str, new_stop_price: float
+        self, symbol: str, side: str, qty: float, old_order_id: str, new_stop_price: float
     ) -> str:
         """Cancel the existing stop order (if any) and place a new one at the
         updated trailing-stop price. Returns the new order id."""
@@ -416,9 +426,10 @@ class FuturesBroker(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def close_long(
+    async def close_position(
         self,
         symbol: str,
+        side: str,
         qty: float,
         entry_price: float,
         leverage: float,
@@ -433,6 +444,13 @@ class FuturesBroker(abc.ABC):
 
     async def close(self) -> None:
         pass
+
+
+def _exit_side(position_side: str) -> str:
+    """The order side that reduces/closes a position: sell out of a long,
+    buy back a short. Used for the protective stop, the take-profit, and
+    the final exit alike."""
+    return "buy" if position_side == "short" else "sell"
 
 
 class RealFuturesBroker(FuturesBroker):
@@ -463,20 +481,30 @@ class RealFuturesBroker(FuturesBroker):
             self._quote_currency, top_n, min_volume_usd
         )
 
-    async def open_long(
-        self, symbol: str, qty: float, leverage: float, stop_loss_price: float, take_profit_price: float
+    async def open_position(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        leverage: float,
+        stop_loss_price: float,
+        take_profit_price: float,
     ) -> FuturesFill:
         await self.client.set_leverage(symbol, leverage)
-        order = await self.client.create_market_buy(symbol, qty)
+        if side == "short":
+            order = await self.client.create_market_sell(symbol, qty)
+        else:
+            order = await self.client.create_market_buy(symbol, qty)
         price = float(order.get("average") or order.get("price") or 0.0)
         filled = float(order.get("filled") or qty)
         fee = _extract_fee(order)
 
+        exit_side = _exit_side(side)
         stop_order = await self.client.create_stop_market_order(
-            symbol, "sell", filled, stop_loss_price
+            symbol, exit_side, filled, stop_loss_price
         )
         tp_order = await self.client.create_take_profit_market_order(
-            symbol, "sell", filled, take_profit_price
+            symbol, exit_side, filled, take_profit_price
         )
         return FuturesFill(
             price=price,
@@ -487,20 +515,23 @@ class RealFuturesBroker(FuturesBroker):
         )
 
     async def update_stop_order(
-        self, symbol: str, qty: float, old_order_id: str, new_stop_price: float
+        self, symbol: str, side: str, qty: float, old_order_id: str, new_stop_price: float
     ) -> str:
         if old_order_id:
             await self.client.cancel_order(old_order_id, symbol)
-        new_order = await self.client.create_stop_market_order(symbol, "sell", qty, new_stop_price)
+        new_order = await self.client.create_stop_market_order(
+            symbol, _exit_side(side), qty, new_stop_price
+        )
         return str(new_order.get("id", ""))
 
     async def cancel_order(self, symbol: str, order_id: str) -> None:
         if order_id:
             await self.client.cancel_order(order_id, symbol)
 
-    async def close_long(
+    async def close_position(
         self,
         symbol: str,
+        side: str,
         qty: float,
         entry_price: float,
         leverage: float,
@@ -510,7 +541,10 @@ class RealFuturesBroker(FuturesBroker):
         for order_id in (stop_order_id, take_profit_order_id):
             if order_id:
                 await self.client.cancel_order(order_id, symbol)
-        order = await self.client.create_market_sell(symbol, qty)
+        if side == "short":
+            order = await self.client.create_market_buy(symbol, qty)
+        else:
+            order = await self.client.create_market_sell(symbol, qty)
         price = float(order.get("average") or order.get("price") or 0.0)
         filled = float(order.get("filled") or qty)
         fee = _extract_fee(order)
@@ -552,11 +586,19 @@ class PaperFuturesBroker(FuturesBroker):
         slip = self.settings.slippage_buffer_pct / 100
         return price * (1 + slip) if side == "buy" else price * (1 - slip)
 
-    async def open_long(
-        self, symbol: str, qty: float, leverage: float, stop_loss_price: float, take_profit_price: float
+    async def open_position(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        leverage: float,
+        stop_loss_price: float,
+        take_profit_price: float,
     ) -> FuturesFill:
         mark = await self.get_price(symbol)
-        fill_price = self._simulate_fee_and_slippage(mark, "buy")
+        # Slippage always works against you: you buy a touch high and sell a
+        # touch low, whichever direction you're opening in.
+        fill_price = self._simulate_fee_and_slippage(mark, "sell" if side == "short" else "buy")
         notional = fill_price * qty
         margin_required = notional / leverage
         fee = notional * (self.settings.taker_fee_pct / 100)
@@ -567,16 +609,17 @@ class PaperFuturesBroker(FuturesBroker):
         return FuturesFill(price=fill_price, qty=qty, fee_quote=fee)
 
     async def update_stop_order(
-        self, symbol: str, qty: float, old_order_id: str, new_stop_price: float
+        self, symbol: str, side: str, qty: float, old_order_id: str, new_stop_price: float
     ) -> str:
         return ""  # paper mode has no real orders to update; trailing is tracked in the DB row
 
     async def cancel_order(self, symbol: str, order_id: str) -> None:
         pass  # paper mode has no real orders to cancel
 
-    async def close_long(
+    async def close_position(
         self,
         symbol: str,
+        side: str,
         qty: float,
         entry_price: float,
         leverage: float,
@@ -584,10 +627,14 @@ class PaperFuturesBroker(FuturesBroker):
         take_profit_order_id: str,
     ) -> FuturesFill:
         mark = await self.get_price(symbol)
-        fill_price = self._simulate_fee_and_slippage(mark, "sell")
+        fill_price = self._simulate_fee_and_slippage(mark, "buy" if side == "short" else "sell")
         entry_notional = entry_price * qty
         exit_notional = fill_price * qty
-        leveraged_pnl = exit_notional - entry_notional
+        # A short profits when the exit price is BELOW entry, so the sign of
+        # the price move flips relative to a long.
+        leveraged_pnl = (
+            entry_notional - exit_notional if side == "short" else exit_notional - entry_notional
+        )
         margin_locked = entry_notional / leverage
         fee = exit_notional * (self.settings.taker_fee_pct / 100)
         # Return the locked margin plus the (leveraged) price PnL, minus the
