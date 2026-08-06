@@ -89,7 +89,10 @@ export interface FuturesStatusResponse {
   open_positions_count: number;
   max_concurrent_positions: number;
   leverage_default: number;
+  leverage_mode: string;
   max_leverage: number;
+  auto_leverage_min: number;
+  auto_leverage_max: number;
 }
 
 export interface FuturesPositionOut {

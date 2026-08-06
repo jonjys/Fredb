@@ -148,5 +148,11 @@ class FuturesBotState(Base):
     paper_balance: Mapped[float] = mapped_column(Float, default=1000.0)
     daily_start_equity: Mapped[float] = mapped_column(Float, default=1000.0)
     daily_date: Mapped[str] = mapped_column(String, default="")
-    leverage: Mapped[float] = mapped_column(Float, default=5.0)
+    # `leverage` is the ceiling applied to new positions in both modes; in
+    # "auto" mode the bot itself rewrites it periodically based on recent
+    # market volatility (see futures_bot.py), in "manual" mode only the
+    # dashboard writes it. Per-trade leverage is always further clamped
+    # down for liquidation safety regardless of mode.
+    leverage: Mapped[float] = mapped_column(Float, default=8.0)
+    leverage_mode: Mapped[str] = mapped_column(String, default="auto")
     updated_at: Mapped[float] = mapped_column(Float, default=time.time)

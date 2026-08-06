@@ -25,15 +25,25 @@ from app.exchange import FuturesBroker, build_futures_broker
 from app.models import FuturesPosition, FuturesTrade
 from app.risk import RiskManager
 from app.state_store import StateStore
-from app.strategy import ScalpingStrategy
+from app.strategy import ScalpingStrategy, _atr
 
 logger = logging.getLogger("tradingbot.futures_bot")
 
-# How often the dynamic (top-volume) symbol universe is refreshed. Doing
-# this every poll tick would mean an extra fetch-all-tickers call every few
-# seconds for no benefit — the set of liquid pairs doesn't meaningfully
-# change minute to minute.
+# How often the dynamic (top-volume) symbol universe and the auto-leverage
+# ceiling are refreshed. Doing this every poll tick would mean extra API
+# calls every few seconds for no benefit — market-wide volatility and the
+# set of liquid pairs don't meaningfully change minute to minute.
 DYNAMIC_SYMBOL_REFRESH_SECONDS = 300
+
+# Auto leverage mode maps BTC's current ATR% to a ceiling within
+# [futures_auto_leverage_min, futures_auto_leverage_max]: calm markets (at
+# or below the low bound) get the top of the band, choppy markets (at or
+# above the high bound) get pulled down to the bottom of it, linear
+# interpolation in between. This is a market-wide regime proxy, not
+# per-symbol — the per-trade safety clamp (RiskManager.max_safe_leverage)
+# is what actually accounts for each specific trade's own volatility.
+AUTO_LEVERAGE_ATR_LOW_PCT = 0.15
+AUTO_LEVERAGE_ATR_HIGH_PCT = 1.0
 
 
 class FuturesTradingBot:
@@ -48,6 +58,7 @@ class FuturesTradingBot:
         self._last_prices: Dict[str, float] = {}
         self._dynamic_symbols: List[str] = []
         self._dynamic_symbols_refreshed_at: float = 0.0
+        self._leverage_refreshed_at: float = 0.0
 
     async def start_background_loop(self) -> None:
         await asyncio.to_thread(self.store.init, self.settings.futures_paper_starting_balance)
@@ -81,9 +92,51 @@ class FuturesTradingBot:
         logger.info("Futures bot %s by dashboard", "STARTED" if running else "STOPPED")
 
     async def set_leverage_default(self, leverage: float) -> None:
+        """Explicit manual override — switches out of auto mode so the bot
+        stops rewriting this value on its own until the user re-enables it."""
         leverage = max(1.0, min(leverage, self.settings.futures_max_leverage))
-        await self.store.update_state(leverage=leverage)
-        logger.info("Futures default leverage set to %sx by dashboard", leverage)
+        await self.store.update_state(leverage=leverage, leverage_mode="manual")
+        logger.info("Futures leverage manually set to %sx by dashboard (auto mode disabled)", leverage)
+
+    async def set_leverage_mode(self, mode: str) -> None:
+        if mode not in ("auto", "manual"):
+            raise ValueError(f"invalid leverage mode: {mode!r}")
+        await self.store.update_state(leverage_mode=mode)
+        logger.info("Futures leverage mode set to %s by dashboard", mode)
+        if mode == "auto":
+            self._leverage_refreshed_at = 0.0  # force a recompute on the next tick
+
+    def _map_atr_to_leverage_ceiling(self, atr_pct: float) -> float:
+        band_min = self.settings.futures_auto_leverage_min
+        band_max = self.settings.futures_auto_leverage_max
+        if atr_pct <= AUTO_LEVERAGE_ATR_LOW_PCT:
+            return band_max
+        if atr_pct >= AUTO_LEVERAGE_ATR_HIGH_PCT:
+            return band_min
+        span = AUTO_LEVERAGE_ATR_HIGH_PCT - AUTO_LEVERAGE_ATR_LOW_PCT
+        frac = (atr_pct - AUTO_LEVERAGE_ATR_LOW_PCT) / span
+        return band_max - frac * (band_max - band_min)
+
+    async def _maybe_refresh_auto_leverage(self) -> None:
+        state = await self.store.get_state()
+        if state.leverage_mode != "auto":
+            return
+        now = time.time()
+        if self._leverage_refreshed_at and now - self._leverage_refreshed_at < DYNAMIC_SYMBOL_REFRESH_SECONDS:
+            return
+        try:
+            df = await self.broker.get_ohlcv("BTC/USDT:USDT", self.settings.timeframe, limit=30)
+            last_close = float(df["close"].iloc[-1])
+            last_atr = float(_atr(df, 14).iloc[-1])
+            atr_pct = (last_atr / last_close * 100) if last_close else 0.0
+            ceiling = round(self._map_atr_to_leverage_ceiling(atr_pct), 1)
+            await self.store.update_state(leverage=ceiling)
+            self._leverage_refreshed_at = now
+            logger.info(
+                "Auto leverage ceiling recomputed from BTC ATR%%=%.3f%%: %sx", atr_pct, ceiling
+            )
+        except Exception:
+            logger.exception("Failed to refresh auto leverage ceiling — keeping previous value")
 
     async def emergency_kill(self, reason: str = "manual kill switch") -> None:
         await self.store.update_state(running=False, kill_switch=True, kill_switch_reason=reason)
@@ -132,6 +185,9 @@ class FuturesTradingBot:
         state = await self.store.get_state()
         if not state.running or state.kill_switch:
             return
+
+        await self._maybe_refresh_auto_leverage()
+        state = await self.store.get_state()  # re-read in case the ceiling just changed
 
         open_positions = await self.store.get_open_positions()
         if not self.risk.can_open_new_position(len(open_positions), state.kill_switch):
