@@ -44,6 +44,19 @@ class Settings(BaseSettings):
 
     poll_interval_seconds: float = 5.0
 
+    # Futures (leveraged) trading — opt-in, off by default. Deliberately a
+    # separate on/off switch and mode from the spot bot above so the two can
+    # be enabled/promoted to testnet/live independently of each other.
+    futures_enabled: bool = False
+    futures_mode: Literal["paper", "testnet", "live"] = "paper"
+    futures_exchange_id: str = "binanceusdm"
+    futures_symbols_csv: str = Field(
+        default="BTC/USDT:USDT,ETH/USDT:USDT", validation_alias="FUTURES_SYMBOLS"
+    )
+    futures_leverage_default: float = 5.0
+    futures_max_leverage: float = 50.0
+    futures_paper_starting_balance: float = 1000.0
+
     # Security
     dashboard_api_token: str = "change-me-to-a-long-random-secret"
 
@@ -59,6 +72,10 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> List[str]:
         return [s.strip() for s in self.cors_origins_csv.split(",") if s.strip()]
+
+    @property
+    def futures_symbols(self) -> List[str]:
+        return [s.strip() for s in self.futures_symbols_csv.split(",") if s.strip()]
 
     @property
     def exchange_api_key(self) -> str:

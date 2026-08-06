@@ -57,3 +57,49 @@ Only increase risk parameters after you have:
 
 Scale the **balance** before you scale the **risk percentage** — a bigger
 account at 1% risk/trade is safer than a small account at 5% risk/trade.
+
+## Futures (leveraged) trading
+
+Enabled via `FUTURES_ENABLED=true`, runs as a second, independent bot
+against Binance USDT-M perpetual futures (`backend/app/futures_bot.py`).
+Off by default — this is materially higher risk than spot and should not
+be turned on casually.
+
+**The one thing to understand:** leverage does not, by itself, change how
+much you risk per trade. `RiskManager.size_position_leveraged` uses the
+exact same dollar-risk formula as spot (`equity × MAX_RISK_PER_TRADE_PCT`),
+then simply divides the resulting notional by leverage to get the margin
+requirement. Higher leverage means less margin locked per position (more
+capital free for other positions), **not** a bigger loss on a losing trade
+— as long as the stop-loss actually fires.
+
+**Where the real risk is:** liquidation. At leverage `L`, a roughly `1/L`
+adverse price move liquidates the position outright, regardless of where
+your stop-loss is set — Binance's liquidation engine doesn't know or care
+about our stop order. `RiskManager.max_safe_leverage()` clamps the
+*requested* leverage down (never up) so the stop-loss distance always
+stays safely inside the estimated liquidation distance. Don't disable or
+work around this clamp.
+
+**Why native stop orders matter:** on testnet/live, the stop-loss and
+take-profit are placed as real `STOP_MARKET`/`TAKE_PROFIT_MARKET`
+`reduceOnly` orders on the exchange the moment a position opens — not
+just checked by our poll loop. A polled, software-only stop can lose a
+race with a fast move between poll ticks (default every 5s); an
+exchange-side order can't. Paper mode doesn't place real orders (nothing
+to attach them to) — that's fine, since paper mode has no liquidation
+risk to guard against in the first place.
+
+**Recommended settings to start:**
+
+| Parameter | Recommended start | Env var |
+|---|---|---|
+| Default leverage | **5x** | `FUTURES_LEVERAGE_DEFAULT=5` |
+| Max leverage (hard cap) | **10x** while learning the system; raise later if you want | `FUTURES_MAX_LEVERAGE=10` |
+| Mode | **paper**, then Binance Futures Testnet, then live | `FUTURES_MODE=paper` |
+
+`FUTURES_MAX_LEVERAGE` defaults to 50 in this repo (matching what Binance
+offers) so the leverage selector in the dashboard has full range — but
+there is no obligation to actually use the high end of it. Treat 25–50x as
+"available if you understand exactly what you're doing," not as a
+starting point.
