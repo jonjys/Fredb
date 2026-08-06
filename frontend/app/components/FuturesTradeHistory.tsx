@@ -1,48 +1,36 @@
 import { FuturesTradeOut } from "@/lib/types";
-import { fmtMoney, fmtPct, fmtTime, pnlColor } from "@/lib/format";
+import TradeListItem from "@/components/TradeListItem";
 
 export default function FuturesTradeHistory({ trades }: { trades: FuturesTradeOut[] | null }) {
+  const list = trades ?? [];
   return (
     <div className="rounded-xl border border-border bg-surface p-4">
-      <div className="mb-3 text-xs uppercase tracking-wide text-muted">Trade history</div>
-      <div className="max-h-96 overflow-y-auto">
-        <table className="w-full min-w-[780px] text-left text-sm">
-          <thead className="sticky top-0 bg-surface">
-            <tr className="text-xs uppercase text-muted">
-              <th className="pb-2 pr-4">Symbol</th>
-              <th className="pb-2 pr-4">Lev</th>
-              <th className="pb-2 pr-4">Entry</th>
-              <th className="pb-2 pr-4">Exit</th>
-              <th className="pb-2 pr-4">Qty</th>
-              <th className="pb-2 pr-4">P&L (on margin)</th>
-              <th className="pb-2 pr-4">Reason</th>
-              <th className="pb-2 pr-4">Closed</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(trades ?? []).length === 0 && (
-              <tr>
-                <td colSpan={8} className="py-6 text-center text-muted">
-                  No closed trades yet
-                </td>
-              </tr>
-            )}
-            {(trades ?? []).map((t) => (
-              <tr key={t.id} className="border-t border-border">
-                <td className="py-2 pr-4 font-medium">{t.symbol}</td>
-                <td className="py-2 pr-4 text-accent">{t.leverage}x</td>
-                <td className="py-2 pr-4">${fmtMoney(t.entry_price, 4)}</td>
-                <td className="py-2 pr-4">${fmtMoney(t.exit_price, 4)}</td>
-                <td className="py-2 pr-4">{t.qty.toFixed(6)}</td>
-                <td className={`py-2 pr-4 ${pnlColor(t.pnl_quote)}`}>
-                  ${fmtMoney(t.pnl_quote)} ({fmtPct(t.pnl_pct)})
-                </td>
-                <td className="py-2 pr-4 text-muted">{t.close_reason}</td>
-                <td className="py-2 pr-4 text-muted">{fmtTime(t.closed_at)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-xs uppercase tracking-wide text-muted">Trade history</span>
+        {list.length > 0 && <span className="text-xs text-muted">{list.length} trades</span>}
+      </div>
+      <div className="max-h-[32rem] space-y-2 overflow-y-auto pr-1">
+        {list.length === 0 && (
+          <div className="py-10 text-center text-sm text-muted">No closed trades yet</div>
+        )}
+        {list.map((t) => (
+          <TradeListItem
+            key={t.id}
+            trade={{
+              id: t.id,
+              symbol: t.symbol,
+              side: t.side,
+              entryPrice: t.entry_price,
+              exitPrice: t.exit_price,
+              qty: t.qty,
+              pnlQuote: t.pnl_quote,
+              pnlPct: t.pnl_pct,
+              closeReason: t.close_reason,
+              closedAt: t.closed_at,
+              leverage: t.leverage,
+            }}
+          />
+        ))}
       </div>
     </div>
   );
