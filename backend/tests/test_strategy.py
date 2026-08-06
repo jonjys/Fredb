@@ -36,13 +36,16 @@ def test_hold_when_not_enough_candles():
     assert signal.action == "hold"
 
 
-def test_buy_signal_on_uptrend():
+def test_long_signal_on_uptrend():
     strategy = ScalpingStrategy()
-    # steady, moderate uptrend => EMA9 > EMA21, RSI in healthy range, no BB overextension
-    closes = [100 + i * 0.15 for i in range(60)]
-    df = make_df(closes)
-    signal = strategy.generate_signal(df)
-    assert signal.action == "buy"
+    # Uptrend with realistic pullbacks => EMA9 > EMA21, RSI in the healthy
+    # band, no BB overextension. (A pullback-free ramp is deliberately
+    # refused instead — see tests/test_short_side.py.)
+    closes = [100.0]
+    for i in range(59):
+        closes.append(closes[-1] + [0.30, -0.25, 0.30, -0.20][i % 4])
+    signal = strategy.generate_signal(make_df(closes))
+    assert signal.action == "long"
 
 
 def test_hold_on_flat_market():

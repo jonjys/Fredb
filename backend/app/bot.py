@@ -160,7 +160,10 @@ class TradingBot:
             return
 
         signal = self.strategy.generate_signal(df)
-        if signal.action != "buy":
+        # Spot is long-only by nature — you cannot sell an asset you do not
+        # hold. Short signals are simply skipped here; the futures bot is
+        # what acts on them.
+        if signal.action != "long":
             return
 
         sizing = self.risk.size_position(equity, signal.close, signal.atr, signal.atr_pct)

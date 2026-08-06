@@ -17,7 +17,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.bot import TradingBot
 from app.config import settings
-from app.futures_bot import FuturesTradingBot
+from dataclasses import asdict
+
+from app.futures_bot import FuturesTradingBot, _directional_pnl
+from app.stats import compute_stats
 from app.logger import log_buffer, setup_logging
 from app.models import FuturesBotState, FuturesEquitySnapshot, FuturesPosition, FuturesTrade
 from app.schemas import (
@@ -27,6 +30,7 @@ from app.schemas import (
     FuturesStatusResponse,
     FuturesTradeOut,
     LogEntryOut,
+    PerformanceStatsOut,
     PositionOut,
     SettingsOut,
     SettingsUpdate,
@@ -162,6 +166,12 @@ async def get_trades(limit: int = 100):
     ]
 
 
+@app.get("/api/stats", response_model=PerformanceStatsOut, dependencies=[Depends(require_auth)])
+async def get_stats(limit: int = 500):
+    history = await store.get_trade_history(limit)
+    return PerformanceStatsOut(**asdict(compute_stats(history)))
+
+
 @app.get("/api/equity_history", response_model=List[EquityPointOut], dependencies=[Depends(require_auth)])
 async def get_equity_history(limit: int = 200):
     history = await store.get_equity_history(limit)
@@ -284,7 +294,7 @@ async def get_futures_positions():
         unrealized_quote = None
         unrealized_pct = None
         if current_price:
-            unrealized_quote = (current_price - p.entry_price) * p.qty
+            unrealized_quote = _directional_pnl(p.side, p.entry_price, current_price, p.qty)
             unrealized_pct = (unrealized_quote / p.margin_used * 100) if p.margin_used else None
         out.append(
             FuturesPositionOut(
@@ -335,6 +345,16 @@ async def get_futures_trades(limit: int = 100):
         )
         for p in history
     ]
+
+
+@app.get(
+    "/api/futures/stats",
+    response_model=PerformanceStatsOut,
+    dependencies=[Depends(require_auth), Depends(require_futures_enabled)],
+)
+async def get_futures_stats(limit: int = 500):
+    history = await futures_store.get_trade_history(limit)
+    return PerformanceStatsOut(**asdict(compute_stats(history)))
 
 
 @app.get(
