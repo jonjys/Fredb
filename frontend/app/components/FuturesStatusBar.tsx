@@ -49,7 +49,8 @@ export default function FuturesStatusBar({
             {status?.exchange ?? "—"} · {status?.symbols.join(", ") ?? "—"}
           </span>
           <span className="rounded-full border border-accent/40 bg-accent/10 px-3 py-1 text-xs font-semibold text-accent">
-            {status?.leverage_default ?? "—"}x default leverage
+            {status?.leverage_default ?? "—"}x{" "}
+            {status?.leverage_mode === "manual" ? "(manual)" : "(auto)"}
           </span>
           {status?.kill_switch && (
             <span className="rounded-full border border-negative/40 bg-negative/20 px-3 py-1 text-xs font-semibold text-negative">

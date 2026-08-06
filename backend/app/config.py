@@ -73,8 +73,15 @@ class Settings(BaseSettings):
     futures_extra_allowed_symbols_csv: str = Field(
         default="", validation_alias="FUTURES_EXTRA_ALLOWED_SYMBOLS"
     )
-    futures_leverage_default: float = 5.0
+    futures_leverage_default: float = 8.0
     futures_max_leverage: float = 50.0
+    # "Auto" leverage mode (the default) recomputes the leverage ceiling
+    # every symbol-refresh cycle from BTC's current ATR% — calm markets get
+    # a ceiling near the max of this band, choppier markets get pulled down
+    # toward the min. Per-trade leverage is still always clamped further by
+    # RiskManager.max_safe_leverage() regardless of what this picks.
+    futures_auto_leverage_min: float = 5.0
+    futures_auto_leverage_max: float = 10.0
     futures_paper_starting_balance: float = 1000.0
 
     # Security

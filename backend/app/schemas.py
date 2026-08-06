@@ -117,7 +117,10 @@ class FuturesStatusResponse(BaseModel):
     open_positions_count: int
     max_concurrent_positions: int
     leverage_default: float
+    leverage_mode: str
     max_leverage: float
+    auto_leverage_min: float
+    auto_leverage_max: float
 
 
 class FuturesPositionOut(BaseModel):
@@ -163,4 +166,5 @@ class FuturesTradeOut(BaseModel):
 
 
 class FuturesLeverageUpdate(BaseModel):
-    leverage: float
+    mode: Optional[str] = None  # "auto" | "manual"
+    leverage: Optional[float] = None  # required when setting a manual value

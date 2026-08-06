@@ -264,7 +264,10 @@ async def get_futures_status():
         open_positions_count=len(open_positions),
         max_concurrent_positions=settings.max_concurrent_positions,
         leverage_default=state.leverage,
+        leverage_mode=state.leverage_mode,
         max_leverage=settings.futures_max_leverage,
+        auto_leverage_min=settings.futures_auto_leverage_min,
+        auto_leverage_max=settings.futures_auto_leverage_max,
     )
 
 
@@ -362,13 +365,19 @@ async def get_futures_logs(limit: int = 200):
     dependencies=[Depends(require_auth), Depends(require_futures_enabled)],
 )
 async def set_futures_leverage(update: FuturesLeverageUpdate):
+    if update.mode == "auto":
+        await futures_bot.set_leverage_mode("auto")
+        return {"leverage_mode": "auto"}
+
+    if update.leverage is None:
+        raise HTTPException(status_code=400, detail="leverage is required when not switching to auto")
     if update.leverage < 1 or update.leverage > settings.futures_max_leverage:
         raise HTTPException(
             status_code=400,
             detail=f"Leverage must be between 1x and {settings.futures_max_leverage}x",
         )
     await futures_bot.set_leverage_default(update.leverage)
-    return {"leverage": update.leverage}
+    return {"leverage": update.leverage, "leverage_mode": "manual"}
 
 
 @app.post(

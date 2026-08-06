@@ -35,6 +35,15 @@ export default function FuturesDashboard() {
     refetch();
   }
 
+  async function setAutoLeverage() {
+    await fetch("/api/futures/leverage", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "auto" }),
+    });
+    refetch();
+  }
+
   if (statusError && statusError.startsWith("503")) {
     return (
       <div className="rounded-xl border border-border bg-surface p-6 text-center text-muted">
@@ -55,9 +64,13 @@ export default function FuturesDashboard() {
       <FuturesStatusBar status={status} onChanged={refetch} />
       <FuturesBalanceCard status={status} />
       <LeverageSelector
-        current={status?.leverage_default ?? 5}
+        current={status?.leverage_default ?? 8}
+        mode={status?.leverage_mode ?? "auto"}
+        autoMin={status?.auto_leverage_min ?? 5}
+        autoMax={status?.auto_leverage_max ?? 10}
         maxLeverage={status?.max_leverage ?? 50}
-        onChange={changeLeverage}
+        onChangeLeverage={changeLeverage}
+        onSetAuto={setAutoLeverage}
       />
       <EquityChart points={equity} />
       <FuturesPositionsTable positions={positions} />
