@@ -371,7 +371,15 @@ class FuturesTradingBot:
         # best (lowest) price seen.
         stop_hit = price >= position.stop_loss_price if is_short else price <= position.stop_loss_price
         if stop_hit:
-            await self._close_position(position, "stop_loss")
+            # Once trailing is active, stop_loss_price has been rewritten to the
+            # trailing level (it has to be — that is the price the native
+            # exchange stop order sits at). So the same field serves two very
+            # different outcomes, and labelling both "stop_loss" made every
+            # trailing exit look like a loss in the trade history. Distinguish
+            # them by which mode the position was in.
+            await self._close_position(
+                position, "trailing_stop" if position.trailing_active else "stop_loss"
+            )
             return
 
         def watermark(current_watermark: float) -> float:
