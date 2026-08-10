@@ -1,0 +1,7 @@
+# Extra dependencies for the offline backtest harness (backend/backtest/).
+# Not installed in the production Docker image — see Dockerfile, which only
+# copies app/ and requirements.txt. Install with:
+#   pip install -r requirements.txt -r requirements-backtest.txt
+-r requirements.txt
+requests==2.32.3
+pyarrow==17.0.0
