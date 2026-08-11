@@ -22,10 +22,11 @@ from typing import Dict, List, Optional
 
 from app.config import Settings
 from app.exchange import FuturesBroker, build_futures_broker
+from app.mean_reversion import MeanReversionStrategy, attach_htf_bias
 from app.models import FuturesPosition, FuturesTrade
 from app.risk import RiskManager
 from app.state_store import StateStore
-from app.strategy import ScalpingStrategy, _atr
+from app.strategy import _atr
 
 logger = logging.getLogger("tradingbot.futures_bot")
 
@@ -64,7 +65,15 @@ class FuturesTradingBot:
         self.settings = settings
         self.store = store
         self.broker: FuturesBroker = build_futures_broker(settings)
-        self.strategy = ScalpingStrategy()
+        self.strategy = MeanReversionStrategy(
+            bb_period=settings.mr_bb_period,
+            bb_std=settings.mr_bb_std,
+            rsi_period=settings.mr_rsi_period,
+            rsi_oversold=settings.mr_rsi_oversold,
+            rsi_overbought=settings.mr_rsi_overbought,
+            volume_sma_period=settings.mr_volume_sma_period,
+            min_distance_std=settings.mr_min_distance_std,
+        )
         self.risk = RiskManager(settings)
         self._task: Optional[asyncio.Task] = None
         self._stopping = False
@@ -206,6 +215,9 @@ class FuturesTradingBot:
         if not self.risk.can_open_new_position(len(open_positions), state.kill_switch):
             return
 
+        if state.throttle_paused_until and time.time() < state.throttle_paused_until:
+            return  # consecutive-loss circuit breaker: sitting out the pause window
+
         open_symbols = {p.symbol for p in open_positions}
         for symbol in await self._get_active_symbols():
             if symbol in open_symbols:
@@ -251,13 +263,19 @@ class FuturesTradingBot:
 
     async def _roll_daily_window_if_needed(self) -> None:
         state = await self.store.get_state()
-        today = dt.date.today().isoformat()
+        # UTC explicitly, not server-local date: the daily loss limit and its
+        # "locked until midnight" reset are meant to be midnight UTC — using
+        # the server's local timezone would silently roll the window at a
+        # different wall-clock time depending on where this happens to be
+        # deployed.
+        today = dt.datetime.now(dt.timezone.utc).date().isoformat()
         if state.daily_date != today:
             equity = await self._compute_equity()
             await self.store.update_state(
-                daily_date=today, daily_start_equity=equity, kill_switch=False, kill_switch_reason=""
+                daily_date=today, daily_start_equity=equity, kill_switch=False, kill_switch_reason="",
+                consecutive_losses=0, throttle_paused_until=0.0, reduced_size_trades_remaining=0,
             )
-            logger.info("New futures trading day started. Daily start equity=%.2f", equity)
+            logger.info("New futures trading day started (UTC). Daily start equity=%.2f", equity)
 
     async def _compute_equity(self) -> float:
         free_balance = await self.broker.get_quote_balance()
@@ -280,11 +298,15 @@ class FuturesTradingBot:
 
     async def _evaluate_entry(self, symbol: str, equity: float, requested_leverage: float) -> None:
         try:
-            df = await self.broker.get_ohlcv(symbol, self.settings.timeframe, limit=100)
+            df_1m = await self.broker.get_ohlcv(symbol, self.settings.timeframe, limit=100)
+            df_htf = await self.broker.get_ohlcv(
+                symbol, self.settings.htf_timeframe, limit=self.settings.htf_lookback_bars
+            )
         except Exception:
             logger.exception("Failed to fetch OHLCV for %s", symbol)
             return
 
+        df = attach_htf_bias(df_1m, df_htf, ema_period=self.settings.htf_ema_period)
         signal = self.strategy.generate_signal(df)
         if signal.action not in ("long", "short"):
             return
@@ -297,22 +319,44 @@ class FuturesTradingBot:
         if sizing is None or sizing.qty <= 0:
             return
 
+        # Consecutive-loss circuit breaker: scale size down while inside the
+        # post-throttle reduced-size window (see _record_trade_outcome).
+        state = await self.store.get_state()
+        size_multiplier = self.risk.size_multiplier_for_streak(state.reduced_size_trades_remaining)
+        qty = sizing.qty * size_multiplier
+        margin_required = sizing.margin_required_quote * size_multiplier
+
         free_balance = await self.broker.get_quote_balance()
-        if sizing.margin_required_quote > free_balance:
+        if margin_required > free_balance:
             logger.info(
                 "%s: insufficient free margin for entry (need %.2f, have %.2f)",
-                symbol, sizing.margin_required_quote, free_balance,
+                symbol, margin_required, free_balance,
             )
             return
 
         try:
-            fill = await self.broker.open_position(
-                symbol, side, sizing.qty, sizing.leverage,
+            fill = await self.broker.open_position_post_only(
+                symbol, side, qty, sizing.leverage,
                 sizing.stop_loss_price, sizing.take_profit_price,
+                timeout_seconds=self.settings.post_only_timeout_seconds,
             )
         except Exception:
-            logger.exception("Futures %s entry order failed for %s", side, symbol)
+            logger.exception("Futures %s post-only entry failed for %s", side, symbol)
             return
+
+        if fill is None:
+            # Never chase: unfilled within the timeout means we walk away and
+            # re-evaluate fresh next tick, not place a marketable order.
+            logger.info(
+                "%s %s: post-only entry not filled within %.0fs, cancelled — will re-evaluate",
+                side.upper(), symbol, self.settings.post_only_timeout_seconds,
+            )
+            return
+
+        if size_multiplier < 1.0:
+            await self.store.update_state(
+                reduced_size_trades_remaining=max(0, state.reduced_size_trades_remaining - 1)
+            )
 
         position = FuturesPosition(
             symbol=symbol,
@@ -321,7 +365,7 @@ class FuturesTradingBot:
             leverage=sizing.leverage,
             entry_price=fill.price,
             qty=fill.qty,
-            margin_used=sizing.margin_required_quote,
+            margin_used=margin_required,
             liquidation_price=sizing.liquidation_price,
             stop_loss_price=sizing.stop_loss_price,
             take_profit_price=sizing.take_profit_price,
@@ -346,10 +390,10 @@ class FuturesTradingBot:
         )
         logger.info(
             "OPENED %s %s qty=%.6f entry=%.4f leverage=%sx margin=%.2f SL=%.4f "
-            "(liq~%.4f) TP=%.4f (%s)",
+            "(liq~%.4f) TP=%.4f size=%.0f%% (%s)",
             side.upper(), symbol, fill.qty, fill.price, sizing.leverage,
-            sizing.margin_required_quote, sizing.stop_loss_price, sizing.liquidation_price,
-            sizing.take_profit_price, signal.reason,
+            margin_required, sizing.stop_loss_price, sizing.liquidation_price,
+            sizing.take_profit_price, size_multiplier * 100, signal.reason,
         )
 
     async def _manage_position(self, position: FuturesPosition) -> None:
@@ -388,10 +432,19 @@ class FuturesTradingBot:
         def trailing_stop_from(mark: float) -> float:
             return mark * (1 + trailing_pct) if is_short else mark * (1 - trailing_pct)
 
-        tp_hit = (
-            price <= position.take_profit_price if is_short else price >= position.take_profit_price
+        # Trailing activates at trailing_activate_pct unrealized gain — a
+        # smaller move than the take_profit_pct target itself, unlike the
+        # original scalper (which only started trailing once TP was already
+        # hit). Once active, the fixed TP order is moot: either the trailing
+        # stop locks in a smaller win on a reversal, or the position keeps
+        # extending and the trailing stop rides it past the original target.
+        activate_pct = self.settings.trailing_activate_pct / 100
+        activation_price = (
+            position.entry_price * (1 - activate_pct) if is_short else position.entry_price * (1 + activate_pct)
         )
-        if not position.trailing_active and tp_hit:
+        activation_hit = price <= activation_price if is_short else price >= activation_price
+
+        if not position.trailing_active and activation_hit:
             new_mark = watermark(position.trailing_high)
             trailing_stop_price = trailing_stop_from(new_mark)
             try:
@@ -415,8 +468,9 @@ class FuturesTradingBot:
                 take_profit_order_id="",
             )
             logger.info(
-                "%s %s hit take-profit trigger (%.4f) — trailing stop activated at %.4f",
-                position.side.upper(), position.symbol, price, trailing_stop_price,
+                "%s %s reached +%.2f%% trigger (%.4f) — trailing stop activated at %.4f",
+                position.side.upper(), position.symbol, self.settings.trailing_activate_pct, price,
+                trailing_stop_price,
             )
             return
 
@@ -485,3 +539,36 @@ class FuturesTradingBot:
             position.side.upper(), position.symbol, fill.qty, fill.price, pnl_quote, pnl_pct,
             position.leverage, reason,
         )
+        await self._record_trade_outcome(pnl_quote)
+
+    async def _record_trade_outcome(self, pnl_quote: float) -> None:
+        """Consecutive-loss circuit breaker: a win resets the streak, a loss
+        extends it, and crossing the configured threshold arms a pause plus
+        a reduced-size window for when trading resumes. Fires exactly once
+        per streak — reaching the threshold resets the counter immediately
+        so trade #5, #6, ... of an ongoing bad streak don't each re-arm a
+        fresh 45-minute pause on top of the running one.
+        """
+        state = await self.store.get_state()
+        if pnl_quote > 0:
+            if state.consecutive_losses:
+                await self.store.update_state(consecutive_losses=0)
+            return
+
+        consecutive_losses = state.consecutive_losses + 1
+        if self.risk.should_trigger_loss_throttle(consecutive_losses):
+            pause_until = time.time() + self.settings.consecutive_loss_pause_minutes * 60
+            await self.store.update_state(
+                consecutive_losses=0,
+                throttle_paused_until=pause_until,
+                reduced_size_trades_remaining=self.settings.consecutive_loss_reduced_trades,
+            )
+            logger.warning(
+                "Consecutive-loss circuit breaker: %s losses in a row — pausing new entries for "
+                "%.0f minutes, then %s trades at %.0f%% size",
+                self.settings.consecutive_loss_threshold, self.settings.consecutive_loss_pause_minutes,
+                self.settings.consecutive_loss_reduced_trades,
+                100 - self.settings.consecutive_loss_size_reduction_pct,
+            )
+        else:
+            await self.store.update_state(consecutive_losses=consecutive_losses)

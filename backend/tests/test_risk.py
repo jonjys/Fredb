@@ -57,8 +57,25 @@ def test_daily_drawdown_triggers_kill_switch():
     assert risk.check_daily_drawdown(equity=960, daily_start_equity=1000) is None
 
 
-def test_take_profit_should_exceed_round_trip_costs():
-    risk = make_risk(take_profit_pct=0.6, taker_fee_pct=0.1, slippage_buffer_pct=0.05)
+def test_take_profit_should_exceed_round_trip_costs_by_the_configured_multiple():
+    # round-trip cost = 2*0.1 + 2*0.05 = 0.3%; default floor is 3x that = 0.9%.
+    risk = make_risk(take_profit_pct=1.2, taker_fee_pct=0.1, slippage_buffer_pct=0.05)
     assert risk.is_take_profit_worth_it() is True
+    # 0.6% only just clears 1x cost, well short of the 3x floor.
+    risk_thin_margin = make_risk(take_profit_pct=0.6, taker_fee_pct=0.1, slippage_buffer_pct=0.05)
+    assert risk_thin_margin.is_take_profit_worth_it() is False
     risk_bad = make_risk(take_profit_pct=0.1, taker_fee_pct=0.1, slippage_buffer_pct=0.05)
     assert risk_bad.is_take_profit_worth_it() is False
+
+
+def test_loss_throttle_triggers_at_the_configured_threshold():
+    risk = make_risk(consecutive_loss_threshold=4)
+    assert risk.should_trigger_loss_throttle(3) is False
+    assert risk.should_trigger_loss_throttle(4) is True
+    assert risk.should_trigger_loss_throttle(5) is True
+
+
+def test_size_multiplier_halves_during_reduced_size_window():
+    risk = make_risk(consecutive_loss_size_reduction_pct=50.0)
+    assert risk.size_multiplier_for_streak(reduced_size_trades_remaining=3) == 0.5
+    assert risk.size_multiplier_for_streak(reduced_size_trades_remaining=0) == 1.0

@@ -71,6 +71,13 @@ class BotState(Base):
     daily_date: Mapped[str] = mapped_column(String, default="")
     updated_at: Mapped[float] = mapped_column(Float, default=time.time)
 
+    # Consecutive-loss circuit breaker (independent of the daily kill switch
+    # above — this throttles/pauses on a losing streak regardless of whether
+    # the streak has breached the daily drawdown limit yet).
+    consecutive_losses: Mapped[int] = mapped_column(Integer, default=0)
+    throttle_paused_until: Mapped[float] = mapped_column(Float, default=0.0)  # unix ts, 0 = not paused
+    reduced_size_trades_remaining: Mapped[int] = mapped_column(Integer, default=0)
+
 
 # ---------------------------------------------------------------------------
 # Futures (leveraged) trading — deliberately separate tables from the spot
@@ -156,3 +163,7 @@ class FuturesBotState(Base):
     leverage: Mapped[float] = mapped_column(Float, default=8.0)
     leverage_mode: Mapped[str] = mapped_column(String, default="auto")
     updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+    consecutive_losses: Mapped[int] = mapped_column(Integer, default=0)
+    throttle_paused_until: Mapped[float] = mapped_column(Float, default=0.0)
+    reduced_size_trades_remaining: Mapped[int] = mapped_column(Integer, default=0)

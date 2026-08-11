@@ -6,6 +6,7 @@ mostly a one-line change to EXCHANGE_ID, as required.
 from __future__ import annotations
 
 import abc
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -222,8 +223,76 @@ class ExchangeClient:
         except ccxt_async.OrderNotFound:
             return None
 
+    @_retry()
+    async def fetch_order_book_top(self, symbol: str) -> "tuple[float, float]":
+        """Best bid/ask, for pricing a post-only limit order — placing at the
+        touch (not crossing the spread) is what makes it a maker order."""
+        book = await self.exchange.fetch_order_book(symbol, limit=5)
+        best_bid = float(book["bids"][0][0]) if book.get("bids") else 0.0
+        best_ask = float(book["asks"][0][0]) if book.get("asks") else 0.0
+        return best_bid, best_ask
+
+    @_retry()
+    async def create_post_only_limit(self, symbol: str, side: str, qty: float, price: float):
+        """GTX (good-till-crossing) tells Binance to reject the order outright
+        rather than fill it as a taker if it would cross the spread — the
+        exchange enforces "maker or nothing" for us, so there's no client-side
+        race where this quietly becomes a taker fill."""
+        return await self.exchange.create_order(
+            symbol, "limit", side, qty, price,
+            params={"postOnly": True, "timeInForce": "GTX"},
+        )
+
+    @_retry()
+    async def fetch_order(self, order_id: str, symbol: str):
+        return await self.exchange.fetch_order(order_id, symbol)
+
     async def close(self):
         await self.exchange.close()
+
+
+async def wait_for_fill_or_cancel(
+    client: "ExchangeClient",
+    order_id: str,
+    symbol: str,
+    timeout_seconds: float,
+    poll_interval_seconds: float = 1.0,
+):
+    """Poll a resting post-only order until it fills or the timeout elapses,
+    then cancel whatever's left. Returns the final order dict if anything
+    filled (fully or partially), else None — the caller re-evaluates the
+    signal fresh next tick rather than chasing price with a wider order.
+
+    This is the "never chase the price aggressively" rule from the spec,
+    implemented literally: on timeout we cancel and walk away, we do not
+    place a marketable order to force a fill.
+    """
+    elapsed = 0.0
+    while elapsed < timeout_seconds:
+        await asyncio.sleep(poll_interval_seconds)
+        elapsed += poll_interval_seconds
+        try:
+            order = await client.fetch_order(order_id, symbol)
+        except Exception:
+            logger.exception("Failed to poll post-only order %s (%s)", order_id, symbol)
+            continue
+        if order.get("status") == "closed":
+            return order
+
+    try:
+        await client.cancel_order(order_id, symbol)
+    except Exception:
+        logger.exception("Failed to cancel unfilled post-only order %s (%s)", order_id, symbol)
+
+    # A fill can race the cancel (order fills the instant before the cancel
+    # lands) — re-check once so a real fill is never silently dropped.
+    try:
+        final = await client.fetch_order(order_id, symbol)
+        if float(final.get("filled") or 0) > 0:
+            return final
+    except Exception:
+        logger.exception("Failed to re-check post-only order %s (%s) after cancel", order_id, symbol)
+    return None
 
 
 @dataclass
@@ -286,6 +355,34 @@ class RealBroker(Broker):
         fee = _extract_fee(order)
         return Fill(price=price, qty=filled, fee_quote=fee)
 
+    async def _post_only(self, symbol: str, side: str, qty: float, timeout_seconds: Optional[float]) -> Optional[Fill]:
+        timeout_seconds = timeout_seconds if timeout_seconds is not None else self.settings.post_only_timeout_seconds
+        best_bid, best_ask = await self.client.fetch_order_book_top(symbol)
+        price = best_bid if side == "buy" else best_ask
+        if price <= 0:
+            return None
+        order = await self.client.create_post_only_limit(symbol, side, qty, price)
+        order_id = str(order.get("id", ""))
+        filled = await wait_for_fill_or_cancel(
+            self.client, order_id, symbol, timeout_seconds, self.settings.post_only_poll_interval_seconds
+        )
+        if filled is None:
+            return None
+        fill_price = float(filled.get("average") or filled.get("price") or price)
+        qty_filled = float(filled.get("filled") or 0.0)
+        if qty_filled <= 0:
+            return None
+        return Fill(price=fill_price, qty=qty_filled, fee_quote=_extract_fee(filled))
+
+    async def buy_post_only(self, symbol: str, qty: float, timeout_seconds: Optional[float] = None) -> Optional[Fill]:
+        """Entry-only: places at the best bid with postOnly/GTX so it can
+        only ever fill as a maker. Returns None (never a market fallback) if
+        it isn't filled within timeout_seconds — see wait_for_fill_or_cancel."""
+        return await self._post_only(symbol, "buy", qty, timeout_seconds)
+
+    async def sell_post_only(self, symbol: str, qty: float, timeout_seconds: Optional[float] = None) -> Optional[Fill]:
+        return await self._post_only(symbol, "sell", qty, timeout_seconds)
+
     async def close(self) -> None:
         await self.client.close()
 
@@ -346,6 +443,34 @@ class PaperBroker(Broker):
         self.quote_balance += net
         self.base_holdings[symbol] = max(0.0, self.base_holdings.get(symbol, 0.0) - qty)
         return Fill(price=fill_price, qty=qty, fee_quote=fee)
+
+    # Paper mode has no real order book depth or latency to simulate a
+    # partial/no-fill against, so a post-only order fills immediately at the
+    # best bid/ask — zero slippage (the actual economic benefit of a maker
+    # order) at the maker fee rate. That's optimistic versus a real exchange,
+    # where a post-only order can go unfilled and get cancelled — which is
+    # exactly why the timeout/re-price path in RealBroker still matters once
+    # this graduates to testnet/live.
+    async def buy_post_only(self, symbol: str, qty: float, timeout_seconds: Optional[float] = None) -> Optional[Fill]:
+        best_bid, _ = await self.client.fetch_order_book_top(symbol)
+        price = best_bid or await self.get_price(symbol)
+        cost = price * qty
+        fee = cost * (self.settings.maker_fee_pct / 100)
+        total = cost + fee
+        if total > self.quote_balance:
+            raise ValueError("Paper broker: insufficient simulated balance")
+        self.quote_balance -= total
+        self.base_holdings[symbol] = self.base_holdings.get(symbol, 0.0) + qty
+        return Fill(price=price, qty=qty, fee_quote=fee)
+
+    async def sell_post_only(self, symbol: str, qty: float, timeout_seconds: Optional[float] = None) -> Optional[Fill]:
+        _, best_ask = await self.client.fetch_order_book_top(symbol)
+        price = best_ask or await self.get_price(symbol)
+        proceeds = price * qty
+        fee = proceeds * (self.settings.maker_fee_pct / 100)
+        self.quote_balance += proceeds - fee
+        self.base_holdings[symbol] = max(0.0, self.base_holdings.get(symbol, 0.0) - qty)
+        return Fill(price=price, qty=qty, fee_quote=fee)
 
     async def close(self) -> None:
         await self.client.close()
@@ -514,6 +639,54 @@ class RealFuturesBroker(FuturesBroker):
             take_profit_order_id=str(tp_order.get("id", "")),
         )
 
+    async def open_position_post_only(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        leverage: float,
+        stop_loss_price: float,
+        take_profit_price: float,
+        timeout_seconds: Optional[float] = None,
+    ) -> Optional[FuturesFill]:
+        """Same protective-order behavior as open_position, but the entry
+        itself is a postOnly/GTX limit at the current best bid (long) / best
+        ask (short) instead of a market order. Returns None — placing no
+        position at all — if it isn't filled within timeout_seconds; the
+        stop/TP orders are only placed once an actual fill exists, so there
+        is never a dangling protective order with nothing to protect."""
+        timeout_seconds = timeout_seconds if timeout_seconds is not None else self.settings.post_only_timeout_seconds
+        await self.client.set_leverage(symbol, leverage)
+        best_bid, best_ask = await self.client.fetch_order_book_top(symbol)
+        order_side = "sell" if side == "short" else "buy"
+        price = best_bid if order_side == "buy" else best_ask
+        if price <= 0:
+            return None
+
+        order = await self.client.create_post_only_limit(symbol, order_side, qty, price)
+        order_id = str(order.get("id", ""))
+        filled = await wait_for_fill_or_cancel(
+            self.client, order_id, symbol, timeout_seconds, self.settings.post_only_poll_interval_seconds
+        )
+        if filled is None:
+            return None
+        fill_price = float(filled.get("average") or filled.get("price") or price)
+        filled_qty = float(filled.get("filled") or 0.0)
+        if filled_qty <= 0:
+            return None
+        fee = _extract_fee(filled)
+
+        exit_side = _exit_side(side)
+        stop_order = await self.client.create_stop_market_order(symbol, exit_side, filled_qty, stop_loss_price)
+        tp_order = await self.client.create_take_profit_market_order(symbol, exit_side, filled_qty, take_profit_price)
+        return FuturesFill(
+            price=fill_price,
+            qty=filled_qty,
+            fee_quote=fee,
+            stop_order_id=str(stop_order.get("id", "")),
+            take_profit_order_id=str(tp_order.get("id", "")),
+        )
+
     async def update_stop_order(
         self, symbol: str, side: str, qty: float, old_order_id: str, new_stop_price: float
     ) -> str:
@@ -607,6 +780,31 @@ class PaperFuturesBroker(FuturesBroker):
             raise ValueError("Paper futures broker: insufficient simulated margin balance")
         self.quote_balance -= total
         return FuturesFill(price=fill_price, qty=qty, fee_quote=fee)
+
+    async def open_position_post_only(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        leverage: float,
+        stop_loss_price: float,
+        take_profit_price: float,
+        timeout_seconds: Optional[float] = None,
+    ) -> Optional[FuturesFill]:
+        """Paper-mode approximation: fills immediately at the best bid/ask
+        (zero slippage) with the maker fee, same simplification and caveat
+        as PaperBroker.buy_post_only above."""
+        best_bid, best_ask = await self.client.fetch_order_book_top(symbol)
+        order_side = "sell" if side == "short" else "buy"
+        price = (best_bid if order_side == "buy" else best_ask) or await self.get_price(symbol)
+        notional = price * qty
+        margin_required = notional / leverage
+        fee = notional * (self.settings.maker_fee_pct / 100)
+        total = margin_required + fee
+        if total > self.quote_balance:
+            raise ValueError("Paper futures broker: insufficient simulated margin balance")
+        self.quote_balance -= total
+        return FuturesFill(price=price, qty=qty, fee_quote=fee)
 
     async def update_stop_order(
         self, symbol: str, side: str, qty: float, old_order_id: str, new_stop_price: float

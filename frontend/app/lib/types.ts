@@ -12,6 +12,7 @@ export interface StatusResponse {
   daily_pnl_pct: number;
   open_positions_count: number;
   max_concurrent_positions: number;
+  throttle_paused_until: number;
 }
 
 export interface PositionOut {
@@ -114,6 +115,7 @@ export interface FuturesStatusResponse {
   max_leverage: number;
   auto_leverage_min: number;
   auto_leverage_max: number;
+  throttle_paused_until: number;
 }
 
 export interface FuturesPositionOut {
@@ -134,6 +136,11 @@ export interface FuturesPositionOut {
   unrealized_pnl_quote: number | null;
   unrealized_pnl_pct: number | null;
   opened_at: number;
+}
+
+export interface CandlePoint {
+  timestamp: number;
+  close: number;
 }
 
 export interface FuturesTradeOut {

@@ -24,6 +24,7 @@ from app.stats import compute_stats
 from app.logger import log_buffer, setup_logging
 from app.models import FuturesBotState, FuturesEquitySnapshot, FuturesPosition, FuturesTrade
 from app.schemas import (
+    CandlePoint,
     EquityPointOut,
     FuturesLeverageUpdate,
     FuturesPositionOut,
@@ -109,6 +110,7 @@ async def get_status():
         daily_pnl_pct=daily_pnl_pct,
         open_positions_count=len(open_positions),
         max_concurrent_positions=settings.max_concurrent_positions,
+        throttle_paused_until=state.throttle_paused_until,
     )
 
 
@@ -241,6 +243,37 @@ async def reset_kill():
     return {"kill_switch": False}
 
 
+@app.post("/api/bot/reset", dependencies=[Depends(require_auth)])
+async def reset_bot():
+    """Hard reset: wipe every position/trade/equity point and restart the
+    paper wallet at the configured starting balance, as if the bot had
+    never run. Paper mode only — refuses on testnet/live, where "reset"
+    would mean discarding a record of real orders, not just paper history.
+    """
+    if settings.bot_mode != "paper":
+        raise HTTPException(status_code=409, detail="Reset is only available in paper mode")
+    await store.reset_paper_account(settings.paper_starting_balance)
+    bot.broker.quote_balance = settings.paper_starting_balance  # type: ignore[attr-defined]
+    bot.broker.base_holdings = {}  # type: ignore[attr-defined]
+    bot._last_prices.clear()
+    logger.info("Spot paper account reset to $%.2f by dashboard", settings.paper_starting_balance)
+    return {"reset": True, "paper_balance": settings.paper_starting_balance}
+
+
+@app.get(
+    "/api/positions/{position_id}/candles",
+    response_model=List[CandlePoint],
+    dependencies=[Depends(require_auth)],
+)
+async def get_position_candles(position_id: int, limit: int = 60):
+    positions = await store.get_open_positions()
+    position = next((p for p in positions if p.id == position_id), None)
+    if position is None:
+        raise HTTPException(status_code=404, detail="Open position not found")
+    df = await bot.broker.get_ohlcv(position.symbol, settings.timeframe, limit=limit)
+    return [CandlePoint(timestamp=float(row.timestamp) / 1000, close=float(row.close)) for row in df.itertuples()]
+
+
 # ============================================================================
 # Futures (leveraged) — all routes 503 if FUTURES_ENABLED is not set.
 # ============================================================================
@@ -278,6 +311,7 @@ async def get_futures_status():
         max_leverage=settings.futures_max_leverage,
         auto_leverage_min=settings.futures_auto_leverage_min,
         auto_leverage_max=settings.futures_auto_leverage_max,
+        throttle_paused_until=state.throttle_paused_until,
     )
 
 
@@ -436,3 +470,34 @@ async def kill_futures_bot():
 async def reset_futures_kill():
     await futures_bot.reset_kill_switch()
     return {"kill_switch": False}
+
+
+@app.post(
+    "/api/futures/bot/reset",
+    dependencies=[Depends(require_auth), Depends(require_futures_enabled)],
+)
+async def reset_futures_bot():
+    if settings.futures_mode != "paper":
+        raise HTTPException(status_code=409, detail="Reset is only available in paper mode")
+    await futures_store.reset_paper_account(settings.futures_paper_starting_balance)
+    futures_bot.broker.quote_balance = settings.futures_paper_starting_balance  # type: ignore[attr-defined]
+    futures_bot._last_prices.clear()
+    futures_bot._leverage_refreshed_at = 0.0
+    logger.info(
+        "Futures paper account reset to $%.2f by dashboard", settings.futures_paper_starting_balance
+    )
+    return {"reset": True, "paper_balance": settings.futures_paper_starting_balance}
+
+
+@app.get(
+    "/api/futures/positions/{position_id}/candles",
+    response_model=List[CandlePoint],
+    dependencies=[Depends(require_auth), Depends(require_futures_enabled)],
+)
+async def get_futures_position_candles(position_id: int, limit: int = 60):
+    positions = await futures_store.get_open_positions()
+    position = next((p for p in positions if p.id == position_id), None)
+    if position is None:
+        raise HTTPException(status_code=404, detail="Open position not found")
+    df = await futures_bot.broker.get_ohlcv(position.symbol, settings.timeframe, limit=limit)
+    return [CandlePoint(timestamp=float(row.timestamp) / 1000, close=float(row.close)) for row in df.itertuples()]
