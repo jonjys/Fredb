@@ -16,6 +16,7 @@ import BalanceCard from "@/components/BalanceCard";
 import EquityChart from "@/components/EquityChart";
 import PositionsTable from "@/components/PositionsTable";
 import MobilePositionCard from "@/components/MobilePositionCard";
+import MarketPanel from "@/components/MarketPanel";
 import LiveOrdersPanel, { LiveOrderRowData } from "@/components/LiveOrdersPanel";
 import TradeHistory from "@/components/TradeHistory";
 import LiveLog from "@/components/LiveLog";
@@ -70,6 +71,11 @@ export default function SpotDashboard() {
           />
           <StatusBar status={status} onChanged={refetch} />
           <BalanceCard status={status} />
+          <MarketPanel
+            symbols={status?.symbols ?? []}
+            ohlcvBasePath="/api/market/ohlcv"
+            orderBookBasePath="/api/market/orderbook"
+          />
           <PerformancePanel stats={stats} />
           <EquityChart points={equity} />
         </div>

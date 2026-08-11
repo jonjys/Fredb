@@ -143,6 +143,21 @@ export interface CandlePoint {
   close: number;
 }
 
+export interface OhlcvBar {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface OrderBookData {
+  symbol: string;
+  bids: [number, number][]; // [price, qty], best-first
+  asks: [number, number][];
+}
+
 export interface FuturesTradeOut {
   id: number;
   symbol: string;

@@ -31,6 +31,8 @@ from app.schemas import (
     FuturesStatusResponse,
     FuturesTradeOut,
     LogEntryOut,
+    OhlcvBarOut,
+    OrderBookOut,
     PerformanceStatsOut,
     PositionOut,
     SettingsOut,
@@ -274,6 +276,27 @@ async def get_position_candles(position_id: int, limit: int = 60):
     return [CandlePoint(timestamp=float(row.timestamp) / 1000, close=float(row.close)) for row in df.itertuples()]
 
 
+@app.get("/api/market/ohlcv", response_model=List[OhlcvBarOut], dependencies=[Depends(require_auth)])
+async def get_market_ohlcv(symbol: str, timeframe: str = "1m", limit: int = 100):
+    """Full OHLCV bars for a symbol's-eye chart — unlike the per-position
+    candles endpoint above (which only needs close for a sparkline), this
+    keeps high/low/open so the frontend can render a real candlestick."""
+    df = await bot.broker.get_ohlcv(symbol, timeframe, limit=limit)
+    return [
+        OhlcvBarOut(
+            timestamp=float(row.timestamp) / 1000, open=float(row.open), high=float(row.high),
+            low=float(row.low), close=float(row.close), volume=float(row.volume),
+        )
+        for row in df.itertuples()
+    ]
+
+
+@app.get("/api/market/orderbook", response_model=OrderBookOut, dependencies=[Depends(require_auth)])
+async def get_market_orderbook(symbol: str, limit: int = 15):
+    book = await bot.broker.get_order_book(symbol, limit)
+    return OrderBookOut(symbol=symbol, bids=book["bids"], asks=book["asks"])
+
+
 # ============================================================================
 # Futures (leveraged) — all routes 503 if FUTURES_ENABLED is not set.
 # ============================================================================
@@ -501,3 +524,29 @@ async def get_futures_position_candles(position_id: int, limit: int = 60):
         raise HTTPException(status_code=404, detail="Open position not found")
     df = await futures_bot.broker.get_ohlcv(position.symbol, settings.timeframe, limit=limit)
     return [CandlePoint(timestamp=float(row.timestamp) / 1000, close=float(row.close)) for row in df.itertuples()]
+
+
+@app.get(
+    "/api/futures/market/ohlcv",
+    response_model=List[OhlcvBarOut],
+    dependencies=[Depends(require_auth), Depends(require_futures_enabled)],
+)
+async def get_futures_market_ohlcv(symbol: str, timeframe: str = "1m", limit: int = 100):
+    df = await futures_bot.broker.get_ohlcv(symbol, timeframe, limit=limit)
+    return [
+        OhlcvBarOut(
+            timestamp=float(row.timestamp) / 1000, open=float(row.open), high=float(row.high),
+            low=float(row.low), close=float(row.close), volume=float(row.volume),
+        )
+        for row in df.itertuples()
+    ]
+
+
+@app.get(
+    "/api/futures/market/orderbook",
+    response_model=OrderBookOut,
+    dependencies=[Depends(require_auth), Depends(require_futures_enabled)],
+)
+async def get_futures_market_orderbook(symbol: str, limit: int = 15):
+    book = await futures_bot.broker.get_order_book(symbol, limit)
+    return OrderBookOut(symbol=symbol, bids=book["bids"], asks=book["asks"])
