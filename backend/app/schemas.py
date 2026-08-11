@@ -196,3 +196,18 @@ class FuturesLeverageUpdate(BaseModel):
 class CandlePoint(BaseModel):
     timestamp: float
     close: float
+
+
+class OhlcvBarOut(BaseModel):
+    timestamp: float
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+class OrderBookOut(BaseModel):
+    symbol: str
+    bids: List[List[float]]  # [[price, qty], ...] best-first
+    asks: List[List[float]]  # [[price, qty], ...] best-first

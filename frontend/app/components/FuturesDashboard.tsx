@@ -16,6 +16,7 @@ import FuturesBalanceCard from "@/components/FuturesBalanceCard";
 import EquityChart from "@/components/EquityChart";
 import FuturesPositionsTable from "@/components/FuturesPositionsTable";
 import MobilePositionCard from "@/components/MobilePositionCard";
+import MarketPanel from "@/components/MarketPanel";
 import LiveOrdersPanel, { LiveOrderRowData } from "@/components/LiveOrdersPanel";
 import FuturesTradeHistory from "@/components/FuturesTradeHistory";
 import LiveLog from "@/components/LiveLog";
@@ -102,6 +103,11 @@ export default function FuturesDashboard() {
           />
           <FuturesStatusBar status={status} onChanged={refetch} />
           <FuturesBalanceCard status={status} />
+          <MarketPanel
+            symbols={status?.symbols ?? []}
+            ohlcvBasePath="/api/futures/market/ohlcv"
+            orderBookBasePath="/api/futures/market/orderbook"
+          />
           <PerformancePanel stats={stats} />
           <LeverageSelector
             current={status?.leverage_default ?? 8}

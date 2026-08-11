@@ -233,6 +233,16 @@ class ExchangeClient:
         return best_bid, best_ask
 
     @_retry()
+    async def fetch_order_book_depth(self, symbol: str, limit: int = 15) -> Dict:
+        """Multi-level order book for the market-view UI — a deeper read than
+        fetch_order_book_top, which only needs the touch price. Public data,
+        no credentials required, so this works in paper mode too."""
+        book = await self.exchange.fetch_order_book(symbol, limit=limit)
+        bids = [[float(p), float(q)] for p, q in (book.get("bids") or [])[:limit]]
+        asks = [[float(p), float(q)] for p, q in (book.get("asks") or [])[:limit]]
+        return {"bids": bids, "asks": asks}
+
+    @_retry()
     async def create_post_only_limit(self, symbol: str, side: str, qty: float, price: float):
         """GTX (good-till-crossing) tells Binance to reject the order outright
         rather than fill it as a taker if it would cross the spread — the
@@ -338,6 +348,9 @@ class RealBroker(Broker):
     async def get_price(self, symbol: str) -> float:
         return await self.client.fetch_ticker_price(symbol)
 
+    async def get_order_book(self, symbol: str, limit: int = 15) -> Dict:
+        return await self.client.fetch_order_book_depth(symbol, limit)
+
     async def get_quote_balance(self) -> float:
         return await self.client.fetch_balance_quote(self._quote_currency)
 
@@ -414,6 +427,9 @@ class PaperBroker(Broker):
 
     async def get_price(self, symbol: str) -> float:
         return await self.client.fetch_ticker_price(symbol)
+
+    async def get_order_book(self, symbol: str, limit: int = 15) -> Dict:
+        return await self.client.fetch_order_book_depth(symbol, limit)
 
     async def get_quote_balance(self) -> float:
         return self.quote_balance
@@ -598,6 +614,9 @@ class RealFuturesBroker(FuturesBroker):
     async def get_price(self, symbol: str) -> float:
         return await self.client.fetch_ticker_price(symbol)
 
+    async def get_order_book(self, symbol: str, limit: int = 15) -> Dict:
+        return await self.client.fetch_order_book_depth(symbol, limit)
+
     async def get_quote_balance(self) -> float:
         return await self.client.fetch_balance_quote(self._quote_currency)
 
@@ -748,6 +767,9 @@ class PaperFuturesBroker(FuturesBroker):
 
     async def get_price(self, symbol: str) -> float:
         return await self.client.fetch_ticker_price(symbol)
+
+    async def get_order_book(self, symbol: str, limit: int = 15) -> Dict:
+        return await self.client.fetch_order_book_depth(symbol, limit)
 
     async def get_quote_balance(self) -> float:
         return self.quote_balance
