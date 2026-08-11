@@ -20,7 +20,7 @@ export default function MarketTypeTabs({
         <button
           key={t.key}
           onClick={() => onChange(t.key)}
-          className={`flex-1 rounded-lg px-4 py-2 text-sm font-semibold transition ${
+          className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition md:px-4 md:py-2 md:text-sm ${
             active === t.key
               ? "bg-accent text-white"
               : "text-muted hover:bg-surfaceAlt hover:text-white"

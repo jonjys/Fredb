@@ -3,9 +3,9 @@ import { fmtMoney, fmtPct, pnlColor } from "@/lib/format";
 
 function Stat({ label, value, sub, subColor }: { label: string; value: string; sub?: string; subColor?: string }) {
   return (
-    <div className="rounded-xl border border-border bg-surface p-4">
+    <div className="rounded-xl border border-border bg-surface p-3 md:p-4">
       <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
-      <div className="mt-1 text-2xl font-semibold text-white">{value}</div>
+      <div className="mt-1 truncate text-lg font-semibold text-white md:text-2xl">{value}</div>
       {sub && <div className={`mt-1 text-sm ${subColor ?? "text-muted"}`}>{sub}</div>}
     </div>
   );
@@ -13,7 +13,7 @@ function Stat({ label, value, sub, subColor }: { label: string; value: string; s
 
 export default function FuturesBalanceCard({ status }: { status: FuturesStatusResponse | null }) {
   return (
-    <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+    <div className="grid grid-cols-2 gap-2 md:grid-cols-4 md:gap-4">
       <Stat label="Portfolio value" value={`$${fmtMoney(status?.equity)}`} />
       <Stat label="Free margin" value={`$${fmtMoney(status?.quote_balance)}`} />
       <Stat

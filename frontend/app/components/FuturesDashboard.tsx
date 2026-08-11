@@ -81,7 +81,7 @@ export default function FuturesDashboard() {
   const throttlePaused = (status?.throttle_paused_until ?? 0) > Date.now() / 1000;
 
   return (
-    <div className="space-y-6 pb-20 md:pb-0">
+    <div className="space-y-3 pb-20 md:space-y-6 md:pb-0">
       {statusError && (
         <div className="rounded-lg border border-negative/40 bg-negative/10 p-3 text-sm text-negative">
           Backend unreachable: {statusError}
@@ -89,7 +89,7 @@ export default function FuturesDashboard() {
       )}
 
       <MobileSection view="dashboard">
-        <div className="space-y-6">
+        <div className="space-y-3 md:space-y-6">
           <PerformanceGrid
             data={{
               winRatePct: stats && stats.total_trades > 0 ? stats.win_rate_pct : null,
@@ -123,7 +123,7 @@ export default function FuturesDashboard() {
       </MobileSection>
 
       <MobileSection view="positions">
-        <div className="space-y-6">
+        <div className="space-y-3 md:space-y-6">
           <LiveOrdersPanel orders={liveOrders} />
           <div className="space-y-3 md:hidden">
             {liveOrders.map((o) => (
@@ -132,6 +132,9 @@ export default function FuturesDashboard() {
           </div>
           <div className="hidden md:block">
             <FuturesPositionsTable positions={positions} />
+          </div>
+          <div className="md:hidden">
+            <FuturesTradeHistory trades={trades} />
           </div>
         </div>
       </MobileSection>
