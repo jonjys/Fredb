@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { StatusResponse } from "@/lib/types";
+import ResetButton from "@/components/ResetButton";
 
 export default function StatusBar({
   status,
@@ -116,6 +117,7 @@ export default function StatusBar({
             Emergency Kill
           </button>
         )}
+        {status?.mode === "paper" && <ResetButton resetPath="/api/bot/reset" />}
       </div>
     </div>
   );

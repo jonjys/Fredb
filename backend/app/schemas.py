@@ -20,6 +20,7 @@ class StatusResponse(BaseModel):
     daily_pnl_pct: float
     open_positions_count: int
     max_concurrent_positions: int
+    throttle_paused_until: float = 0.0  # unix ts; 0 = not paused by the consecutive-loss breaker
 
 
 class PositionOut(BaseModel):
@@ -121,6 +122,7 @@ class FuturesStatusResponse(BaseModel):
     max_leverage: float
     auto_leverage_min: float
     auto_leverage_max: float
+    throttle_paused_until: float = 0.0
 
 
 class FuturesPositionOut(BaseModel):
@@ -189,3 +191,8 @@ class PerformanceStatsOut(BaseModel):
 class FuturesLeverageUpdate(BaseModel):
     mode: Optional[str] = None  # "auto" | "manual"
     leverage: Optional[float] = None  # required when setting a manual value
+
+
+class CandlePoint(BaseModel):
+    timestamp: float
+    close: float

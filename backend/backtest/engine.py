@@ -106,10 +106,13 @@ class BacktestEngine:
         fixed_leverage: Optional[float] = None,
         simulate_funding: bool = False,
         funding_rate_pct_per_interval: float = 0.01,
+        strategy=None,
     ):
         """
         data: symbol -> DataFrame with columns [timestamp, open, high, low, close, volume],
-              sorted ascending, one entry per symbol traded.
+              sorted ascending, one entry per symbol traded. Extra columns (e.g. an
+              'htf_bias' column attached by app.mean_reversion.attach_htf_bias) pass
+              through untouched and are visible to a pluggable strategy's generate_signal.
         leverage_mode: "auto" reproduces futures_bot's ATR-driven ceiling (using the first
               symbol in `data` as the BTC proxy, same as production always keying auto
               leverage off BTC/USDT:USDT regardless of what's actually traded). "fixed" uses
@@ -117,9 +120,12 @@ class BacktestEngine:
         simulate_funding: off by default to match PaperFuturesBroker (which does not model
               funding) — flip on to see the cost impact of holding leveraged futures
               positions, since that omission is a known gap in the live paper bot too.
+        strategy: anything exposing generate_signal(df) -> Signal, e.g. ScalpingStrategy()
+              or app.mean_reversion.MeanReversionStrategy(). Defaults to ScalpingStrategy()
+              so existing calibration/walk-forward callers are unaffected.
         """
         self.settings = settings
-        self.strategy = ScalpingStrategy()
+        self.strategy = strategy if strategy is not None else ScalpingStrategy()
         self.risk = RiskManager(settings)
         self.data = data
         self.leverage_mode = leverage_mode

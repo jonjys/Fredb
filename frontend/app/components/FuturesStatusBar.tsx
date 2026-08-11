@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { FuturesStatusResponse } from "@/lib/types";
+import ResetButton from "@/components/ResetButton";
 
 export default function FuturesStatusBar({
   status,
@@ -126,6 +127,7 @@ export default function FuturesStatusBar({
               Emergency Kill
             </button>
           )}
+          {status?.mode === "paper" && <ResetButton resetPath="/api/futures/bot/reset" />}
         </div>
       </div>
     </div>

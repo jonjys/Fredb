@@ -244,3 +244,37 @@ class StateStore:
 
     async def get_equity_history(self, limit: int = 200) -> List:
         return await asyncio.to_thread(self._get_equity_history_sync, limit)
+
+    # ---- Full reset ---------------------------------------------------------
+    def _reset_paper_account_sync(self, starting_balance: float):
+        """Wipe every position, trade, and equity point, and reset BotState
+        to a fresh install — as if the bot had never run. Deliberately a hard
+        delete, not a soft "archive" flag: the whole point is a dashboard
+        that reads as brand new, with no old numbers lingering anywhere a
+        poll might still surface them.
+
+        This only ever resets the *paper* wallet and history — it does not
+        touch real exchange positions or balances in testnet/live mode. The
+        caller is expected to gate this behind mode == "paper" before
+        calling it (see the /reset API route).
+        """
+        with self.Session() as session:
+            session.query(self.Position).delete()
+            session.query(self.Trade).delete()
+            session.query(self.EquitySnapshot).delete()
+            today = dt.date.today().isoformat()
+            state = self._get_or_create_state(session)
+            state.running = False
+            state.kill_switch = False
+            state.kill_switch_reason = ""
+            state.paper_balance = starting_balance
+            state.daily_start_equity = starting_balance
+            state.daily_date = today
+            state.consecutive_losses = 0
+            state.throttle_paused_until = 0.0
+            state.reduced_size_trades_remaining = 0
+            state.updated_at = time.time()
+            session.commit()
+
+    async def reset_paper_account(self, starting_balance: float) -> None:
+        await asyncio.to_thread(self._reset_paper_account_sync, starting_balance)

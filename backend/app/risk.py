@@ -195,5 +195,24 @@ class RiskManager:
         return 2 * self.settings.taker_fee_pct + 2 * self.settings.slippage_buffer_pct
 
     def is_take_profit_worth_it(self) -> bool:
-        """Guards against configuring a TP smaller than round-trip costs."""
-        return self.settings.take_profit_pct > self.round_trip_cost_pct()
+        """Guards against configuring a TP that barely clears round-trip costs.
+
+        A margin of just over 1x cost survives fees on paper but not the
+        first bit of real slippage or an unfavorable fill — the multiplier
+        is a deliberate floor, not just a > 0 check.
+        """
+        return self.settings.take_profit_pct >= self.round_trip_cost_pct() * self.settings.min_tp_cost_multiple
+
+    # ---- Consecutive-loss circuit breaker ----------------------------------
+    def should_trigger_loss_throttle(self, consecutive_losses: int) -> bool:
+        """True the moment the losing streak reaches the configured threshold
+        (default 4). The caller (bot loop) is responsible for firing this
+        exactly once per streak — see FuturesBotState.throttle_armed."""
+        return consecutive_losses >= self.settings.consecutive_loss_threshold
+
+    def size_multiplier_for_streak(self, reduced_size_trades_remaining: int) -> float:
+        """0.5x while inside the post-pause reduced-size window, else 1x.
+        Purely a function of state the bot loop already tracks (how many of
+        the post-throttle trades are left) — no side effects here."""
+        reduction = self.settings.consecutive_loss_size_reduction_pct / 100
+        return (1.0 - reduction) if reduced_size_trades_remaining > 0 else 1.0

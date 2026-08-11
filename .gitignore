@@ -16,6 +16,7 @@ frontend/.env
 frontend/.env.local
 frontend/.vercel/
 frontend/npm-debug.log*
+frontend/tsconfig.tsbuildinfo
 
 # --- OS / editor ---------------------------------------------------------
 .DS_Store

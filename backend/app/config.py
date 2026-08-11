@@ -44,6 +44,39 @@ class Settings(BaseSettings):
 
     poll_interval_seconds: float = 5.0
 
+    # Mean-reversion strategy (app/mean_reversion.py)
+    mr_bb_period: int = 20
+    mr_bb_std: float = 2.2
+    mr_rsi_period: int = 14
+    mr_rsi_oversold: float = 28.0
+    mr_rsi_overbought: float = 72.0
+    mr_volume_sma_period: int = 20
+    mr_min_distance_std: float = 1.1
+    htf_timeframe: str = "15m"
+    htf_ema_period: int = 50
+    htf_lookback_bars: int = 80
+
+    # Post-only limit execution (app/exchange.py order helpers)
+    post_only_timeout_seconds: float = 10.0
+    post_only_poll_interval_seconds: float = 1.0
+    maker_fee_pct: float = 0.02  # Binance USDT-M futures maker rate; spot maker == taker by default
+
+    # Trailing-stop activation threshold, independent of take_profit_pct — the
+    # mean-reversion exit spec activates trailing at a smaller unrealized gain
+    # than the take-profit target itself, unlike the original scalper (which
+    # only started trailing once TP was already hit).
+    trailing_activate_pct: float = 0.25
+
+    # Consecutive-loss circuit breaker (on top of the daily kill switch)
+    consecutive_loss_threshold: int = 4
+    consecutive_loss_pause_minutes: float = 45.0
+    consecutive_loss_reduced_trades: int = 3
+    consecutive_loss_size_reduction_pct: float = 50.0
+
+    # Cost-floor multiple for is_take_profit_worth_it() — TP must clear the
+    # round-trip cost by at least this factor, not just exceed it.
+    min_tp_cost_multiple: float = 3.0
+
     # Futures (leveraged) trading — opt-in, off by default. Deliberately a
     # separate on/off switch and mode from the spot bot above so the two can
     # be enabled/promoted to testnet/live independently of each other.
