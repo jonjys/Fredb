@@ -31,8 +31,8 @@ export default function StatusBar({
   };
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-surface p-4">
-      <div className="flex flex-wrap items-center gap-3">
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-surface p-3 md:gap-4 md:p-4">
+      <div className="flex flex-wrap items-center gap-2 md:gap-3">
         <span
           className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
             modeColors[status?.mode ?? "paper"]
@@ -40,7 +40,7 @@ export default function StatusBar({
         >
           {status?.mode ?? "—"} mode
         </span>
-        <span className="text-sm text-muted">
+        <span className="hidden text-sm text-muted sm:inline">
           {status?.exchange ?? "—"} · {status?.symbols.join(", ") ?? "—"}
         </span>
         {status?.kill_switch && (
@@ -61,12 +61,12 @@ export default function StatusBar({
         )}
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {status?.kill_switch ? (
           <button
             disabled={busy}
             onClick={() => call("/api/bot/kill-reset")}
-            className="rounded-lg bg-yellow-600 px-4 py-2 text-sm font-semibold text-white hover:bg-yellow-500 disabled:opacity-50"
+            className="rounded-lg bg-yellow-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-yellow-500 disabled:opacity-50 md:px-4 md:py-2 md:text-sm"
           >
             Reset kill switch
           </button>
@@ -74,7 +74,7 @@ export default function StatusBar({
           <button
             disabled={busy}
             onClick={() => call("/api/bot/stop")}
-            className="rounded-lg bg-surfaceAlt px-4 py-2 text-sm font-semibold text-white hover:bg-border disabled:opacity-50"
+            className="rounded-lg bg-surfaceAlt px-3 py-1.5 text-xs font-semibold text-white hover:bg-border disabled:opacity-50 md:px-4 md:py-2 md:text-sm"
           >
             Stop
           </button>
@@ -82,7 +82,7 @@ export default function StatusBar({
           <button
             disabled={busy}
             onClick={() => call("/api/bot/start")}
-            className="rounded-lg bg-positive px-4 py-2 text-sm font-semibold text-black hover:bg-green-400 disabled:opacity-50"
+            className="rounded-lg bg-positive px-3 py-1.5 text-xs font-semibold text-black hover:bg-green-400 disabled:opacity-50 md:px-4 md:py-2 md:text-sm"
           >
             Start
           </button>
@@ -112,7 +112,7 @@ export default function StatusBar({
           <button
             disabled={busy}
             onClick={() => setConfirmKill(true)}
-            className="rounded-lg border border-negative/40 px-4 py-2 text-sm font-semibold text-negative hover:bg-negative/10 disabled:opacity-50"
+            className="rounded-lg border border-negative/40 px-3 py-1.5 text-xs font-semibold text-negative hover:bg-negative/10 disabled:opacity-50 md:px-4 md:py-2 md:text-sm"
           >
             Emergency Kill
           </button>

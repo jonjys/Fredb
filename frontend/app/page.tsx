@@ -12,9 +12,9 @@ export default function DashboardPage() {
 
   return (
     <DashboardViewProvider>
-      <main className="mx-auto max-w-7xl space-y-6 p-6">
+      <main className="mx-auto max-w-7xl space-y-3 p-3 md:space-y-6 md:p-6">
         <header className="flex items-center justify-between">
-          <h1 className="text-xl font-bold">Trading Bot Dashboard</h1>
+          <h1 className="text-base font-bold md:text-xl">Trading Bot Dashboard</h1>
         </header>
 
         <MarketTypeTabs active={market} onChange={setMarket} />

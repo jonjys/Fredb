@@ -31,14 +31,14 @@ export default function FuturesStatusBar({
   };
 
   return (
-    <div className="space-y-3">
-      <div className="rounded-xl border border-negative/40 bg-negative/10 p-3 text-sm text-negative">
+    <div className="space-y-2 md:space-y-3">
+      <div className="rounded-xl border border-negative/40 bg-negative/10 p-2.5 text-xs text-negative md:p-3 md:text-sm">
         Leveraged futures trading can liquidate a position rapidly on a fast price move. Start in
         paper mode, keep leverage low, and only promote to testnet/live once you trust the
         behavior.
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-surface p-4">
-        <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-surface p-3 md:gap-4 md:p-4">
+        <div className="flex flex-wrap items-center gap-2 md:gap-3">
           <span
             className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
               modeColors[status?.mode ?? "paper"]
@@ -46,7 +46,7 @@ export default function FuturesStatusBar({
           >
             {status?.mode ?? "—"} mode
           </span>
-          <span className="text-sm text-muted">
+          <span className="hidden text-sm text-muted sm:inline">
             {status?.exchange ?? "—"} · {status?.symbols.join(", ") ?? "—"}
           </span>
           <span className="rounded-full border border-accent/40 bg-accent/10 px-3 py-1 text-xs font-semibold text-accent">
@@ -71,12 +71,12 @@ export default function FuturesStatusBar({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {status?.kill_switch ? (
             <button
               disabled={busy}
               onClick={() => call("/api/futures/bot/kill-reset")}
-              className="rounded-lg bg-yellow-600 px-4 py-2 text-sm font-semibold text-white hover:bg-yellow-500 disabled:opacity-50"
+              className="rounded-lg bg-yellow-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-yellow-500 disabled:opacity-50 md:px-4 md:py-2 md:text-sm"
             >
               Reset kill switch
             </button>
@@ -84,7 +84,7 @@ export default function FuturesStatusBar({
             <button
               disabled={busy}
               onClick={() => call("/api/futures/bot/stop")}
-              className="rounded-lg bg-surfaceAlt px-4 py-2 text-sm font-semibold text-white hover:bg-border disabled:opacity-50"
+              className="rounded-lg bg-surfaceAlt px-3 py-1.5 text-xs font-semibold text-white hover:bg-border disabled:opacity-50 md:px-4 md:py-2 md:text-sm"
             >
               Stop
             </button>
@@ -92,14 +92,14 @@ export default function FuturesStatusBar({
             <button
               disabled={busy}
               onClick={() => call("/api/futures/bot/start")}
-              className="rounded-lg bg-positive px-4 py-2 text-sm font-semibold text-black hover:bg-green-400 disabled:opacity-50"
+              className="rounded-lg bg-positive px-3 py-1.5 text-xs font-semibold text-black hover:bg-green-400 disabled:opacity-50 md:px-4 md:py-2 md:text-sm"
             >
               Start
             </button>
           )}
 
           {confirmKill ? (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-negative">Close all positions now?</span>
               <button
                 disabled={busy}
@@ -107,13 +107,13 @@ export default function FuturesStatusBar({
                   call("/api/futures/bot/kill");
                   setConfirmKill(false);
                 }}
-                className="rounded-lg bg-negative px-3 py-2 text-xs font-semibold text-white hover:bg-red-500"
+                className="rounded-lg bg-negative px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-500"
               >
                 Confirm kill
               </button>
               <button
                 onClick={() => setConfirmKill(false)}
-                className="rounded-lg border border-border px-3 py-2 text-xs text-muted hover:bg-surfaceAlt"
+                className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-surfaceAlt"
               >
                 Cancel
               </button>
@@ -122,7 +122,7 @@ export default function FuturesStatusBar({
             <button
               disabled={busy}
               onClick={() => setConfirmKill(true)}
-              className="rounded-lg border border-negative/40 px-4 py-2 text-sm font-semibold text-negative hover:bg-negative/10 disabled:opacity-50"
+              className="rounded-lg border border-negative/40 px-3 py-1.5 text-xs font-semibold text-negative hover:bg-negative/10 disabled:opacity-50 md:px-4 md:py-2 md:text-sm"
             >
               Emergency Kill
             </button>

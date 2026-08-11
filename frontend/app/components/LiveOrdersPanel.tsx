@@ -21,14 +21,23 @@ export interface LiveOrderRowData {
  * that a metrics-only positions table doesn't give you. */
 export default function LiveOrdersPanel({ orders }: { orders: LiveOrderRowData[] }) {
   return (
-    <div className="rounded-xl border border-border bg-surface p-4">
+    <div className="rounded-xl border border-border bg-surface p-3 md:p-4">
       <div className="mb-3 flex items-center justify-between">
         <span className="text-xs uppercase tracking-wide text-muted">Live orders</span>
         {orders.length > 0 && <span className="text-xs text-muted">{orders.length} open</span>}
       </div>
 
       {orders.length === 0 ? (
-        <div className="py-6 text-center text-sm text-muted">No live orders — the bot is flat right now.</div>
+        <div className="flex flex-col items-center gap-2 py-8 text-center">
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
+          </span>
+          <div className="text-sm font-medium text-white/80">Flat right now</div>
+          <div className="max-w-[26ch] text-xs text-muted">
+            The bot is scanning the market for a setup — check Logs for live signal activity.
+          </div>
+        </div>
       ) : (
         <div className="space-y-3">
           {orders.map((o) => (

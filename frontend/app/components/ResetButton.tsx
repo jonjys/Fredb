@@ -36,19 +36,19 @@ export default function ResetButton({ resetPath }: { resetPath: string }) {
 
   if (confirming) {
     return (
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-negative">Wipe all history and restart at $1000?</span>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-negative">Wipe history, restart at $1000?</span>
         <button
           disabled={busy}
           onClick={doReset}
-          className="rounded-lg bg-negative px-3 py-2 text-xs font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+          className="rounded-lg bg-negative px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-500 disabled:opacity-50"
         >
-          {busy ? "Resetting…" : "Confirm reset"}
+          {busy ? "Resetting…" : "Confirm"}
         </button>
         <button
           disabled={busy}
           onClick={() => setConfirming(false)}
-          className="rounded-lg border border-border px-3 py-2 text-xs text-muted hover:bg-surfaceAlt"
+          className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-surfaceAlt"
         >
           Cancel
         </button>
@@ -60,7 +60,7 @@ export default function ResetButton({ resetPath }: { resetPath: string }) {
     <div className="flex items-center gap-2">
       <button
         onClick={() => setConfirming(true)}
-        className="rounded-lg border border-border px-4 py-2 text-sm font-semibold text-muted hover:border-negative/40 hover:text-negative"
+        className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-muted hover:border-negative/40 hover:text-negative md:px-4 md:py-2 md:text-sm"
         title="Wipe all paper trading history and restart at $1000"
       >
         Reset to $1000
