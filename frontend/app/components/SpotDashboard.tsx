@@ -1,3 +1,4 @@
+// app/components/SpotDashboard.tsx
 "use client";
 
 import { usePoll } from "@/lib/usePoll";
@@ -21,6 +22,7 @@ import LiveOrdersPanel, { LiveOrderRowData } from "@/components/LiveOrdersPanel"
 import TradeHistory from "@/components/TradeHistory";
 import LiveLog from "@/components/LiveLog";
 import SettingsPanel from "@/components/SettingsPanel";
+import CircuitBreakerStatus from "@/components/CircuitBreakerStatus";
 import { MobileSection } from "@/components/DashboardViewContext";
 
 export default function SpotDashboard() {
@@ -110,7 +112,16 @@ export default function SpotDashboard() {
       </MobileSection>
 
       <MobileSection view="settings">
-        <SettingsPanel />
+        <div className="space-y-3 md:space-y-6">
+          <CircuitBreakerStatus
+            data={{
+              consecutiveLosses: status?.consecutive_losses ?? 0,
+              throttlePausedUntil: status?.throttle_paused_until ?? 0,
+              reducedSizeTradesRemaining: status?.reduced_size_trades_remaining ?? 0,
+            }}
+          />
+          <SettingsPanel />
+        </div>
       </MobileSection>
     </div>
   );

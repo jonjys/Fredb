@@ -1,3 +1,4 @@
+# app/main.py
 """FastAPI application: REST API consumed by the Next.js dashboard.
 
 Security: every /api/* route (except /api/health) requires a Bearer token
@@ -113,6 +114,8 @@ async def get_status():
         open_positions_count=len(open_positions),
         max_concurrent_positions=settings.max_concurrent_positions,
         throttle_paused_until=state.throttle_paused_until,
+        consecutive_losses=state.consecutive_losses,
+        reduced_size_trades_remaining=state.reduced_size_trades_remaining,
     )
 
 
@@ -335,6 +338,8 @@ async def get_futures_status():
         auto_leverage_min=settings.futures_auto_leverage_min,
         auto_leverage_max=settings.futures_auto_leverage_max,
         throttle_paused_until=state.throttle_paused_until,
+        consecutive_losses=state.consecutive_losses,
+        reduced_size_trades_remaining=state.reduced_size_trades_remaining,
     )
 
 

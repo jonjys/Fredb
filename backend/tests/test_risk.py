@@ -1,3 +1,4 @@
+# tests/test_risk.py
 import os
 import sys
 
@@ -79,3 +80,18 @@ def test_size_multiplier_halves_during_reduced_size_window():
     risk = make_risk(consecutive_loss_size_reduction_pct=50.0)
     assert risk.size_multiplier_for_streak(reduced_size_trades_remaining=3) == 0.5
     assert risk.size_multiplier_for_streak(reduced_size_trades_remaining=0) == 1.0
+
+
+def test_slippage_excessive_only_past_the_configured_threshold():
+    risk = make_risk(slippage_alert_pct=0.15)
+    # 0.1% off the expected stop level — normal, not alert-worthy.
+    assert risk.is_slippage_excessive(fill_price=99.9, expected_price=100.0) is False
+    # 0.2% off — past the 0.15% threshold.
+    assert risk.is_slippage_excessive(fill_price=99.8, expected_price=100.0) is True
+    # Symmetric for a short's stop (fill above expected).
+    assert risk.is_slippage_excessive(fill_price=100.2, expected_price=100.0) is True
+
+
+def test_slippage_excessive_false_for_invalid_expected_price():
+    risk = make_risk()
+    assert risk.is_slippage_excessive(fill_price=100.0, expected_price=0.0) is False

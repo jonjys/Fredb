@@ -43,7 +43,7 @@ dashboard.
 4. Set environment variables (Railway → Variables), at minimum:
    - `BOT_MODE=paper`
    - `EXCHANGE_ID=binance`
-   - `SYMBOLS=BTC/USDT,ETH/USDT`
+   - `SYMBOLS=BTC/USDT,ETH/USDT,SOL/USDT`
    - `DASHBOARD_API_TOKEN=<the secret you generated>`
    - `CORS_ORIGINS=https://<your-vercel-app>.vercel.app`
    - `DATABASE_PATH=data/bot.db`

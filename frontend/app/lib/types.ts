@@ -1,3 +1,4 @@
+// app/lib/types.ts
 export interface StatusResponse {
   mode: string;
   exchange: string;
@@ -13,6 +14,8 @@ export interface StatusResponse {
   open_positions_count: number;
   max_concurrent_positions: number;
   throttle_paused_until: number;
+  consecutive_losses: number;
+  reduced_size_trades_remaining: number;
 }
 
 export interface PositionOut {
@@ -116,6 +119,8 @@ export interface FuturesStatusResponse {
   auto_leverage_min: number;
   auto_leverage_max: number;
   throttle_paused_until: number;
+  consecutive_losses: number;
+  reduced_size_trades_remaining: number;
 }
 
 export interface FuturesPositionOut {

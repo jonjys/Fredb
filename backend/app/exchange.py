@@ -1,3 +1,4 @@
+# app/exchange.py
 """ccxt exchange wrapper with retry/backoff, plus Real & Paper broker implementations.
 
 Using ccxt (not a Binance-specific SDK) means adding a new exchange later is

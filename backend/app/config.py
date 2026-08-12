@@ -1,3 +1,4 @@
+# app/config.py
 """Central configuration, loaded from environment variables / .env."""
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ class Settings(BaseSettings):
     exchange_id: str = "binance"
     # Stored as raw CSV strings (not List[str]) so pydantic-settings doesn't
     # attempt JSON-decoding the env var; see `symbols` / `cors_origins` props.
-    symbols_csv: str = Field(default="BTC/USDT,ETH/USDT", validation_alias="SYMBOLS")
+    symbols_csv: str = Field(default="BTC/USDT,ETH/USDT,SOL/USDT", validation_alias="SYMBOLS")
     cors_origins_csv: str = Field(
         default="http://localhost:3000", validation_alias="CORS_ORIGINS"
     )
@@ -84,14 +85,15 @@ class Settings(BaseSettings):
     futures_mode: Literal["paper", "testnet", "live"] = "paper"
     futures_exchange_id: str = "binanceusdm"
     futures_symbols_csv: str = Field(
-        default="BTC/USDT:USDT,ETH/USDT:USDT", validation_alias="FUTURES_SYMBOLS"
+        default="BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT", validation_alias="FUTURES_SYMBOLS"
     )
     # "dynamic" scans the top-N most liquid USDT-M perpetuals by 24h volume
-    # instead of a fixed list, so the bot isn't limited to BTC/ETH — any
-    # sufficiently liquid pair (ADA, SOL, DOGE, meme coins once they have
-    # real volume, etc.) becomes tradeable automatically. "fixed" uses
-    # futures_symbols_csv above, unchanged from the original behavior.
-    futures_symbol_mode: Literal["fixed", "dynamic"] = "dynamic"
+    # instead of a fixed list — was the default while the strategy was being
+    # validated broadly, but a mean-reversion engine on leverage is exactly
+    # the setup that gets hurt most by thin-book altcoin slippage, so the
+    # default is now "fixed" on BTC/ETH/SOL only. "dynamic" is still
+    # available (and still volume-floor-gated) for anyone who wants it back.
+    futures_symbol_mode: Literal["fixed", "dynamic"] = "fixed"
     futures_dynamic_top_n: int = 10
     # Liquidity floor for the dynamic scan, in 24h USDT volume — this is the
     # main guard against trading thin, easily-manipulated markets with
@@ -116,6 +118,21 @@ class Settings(BaseSettings):
     futures_auto_leverage_min: float = 5.0
     futures_auto_leverage_max: float = 10.0
     futures_paper_starting_balance: float = 1000.0
+
+    # Push notifications (app/notifications.py) — critical-event alerts sent
+    # to Discord and/or Telegram. Both are optional and independent; set
+    # either, both, or neither. Empty (the default) means notifications are
+    # silently disabled rather than erroring, so this never blocks a deploy
+    # that hasn't configured them yet.
+    discord_webhook_url: str = ""
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    # A stop/trailing-stop fill more than this far from the level it was
+    # supposed to trigger at gets flagged as an alert-worthy slippage event.
+    # Paper mode's fixed slippage_buffer_pct model will rarely reach this —
+    # it matters most once promoted to testnet/live, where a real fill can
+    # gap past the trigger on a thin book or a fast move.
+    slippage_alert_pct: float = 0.15
 
     # Security
     dashboard_api_token: str = "change-me-to-a-long-random-secret"

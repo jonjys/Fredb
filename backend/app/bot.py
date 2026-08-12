@@ -1,3 +1,4 @@
+# app/bot.py
 """Main trading bot orchestration loop.
 
 Design goals:
@@ -21,6 +22,7 @@ from app.config import Settings
 from app.exchange import Broker, build_broker
 from app.mean_reversion import MeanReversionStrategy, attach_htf_bias
 from app.models import Position, Trade
+from app.notifications import Notifier
 from app.risk import RiskManager
 from app.state_store import StateStore
 
@@ -42,6 +44,7 @@ class TradingBot:
             min_distance_std=settings.mr_min_distance_std,
         )
         self.risk = RiskManager(settings)
+        self.notifier = Notifier(settings, source="spot")
         self._task: Optional[asyncio.Task] = None
         self._stopping = False
         self._last_prices: Dict[str, float] = {}
@@ -74,6 +77,17 @@ class TradingBot:
     async def emergency_kill(self, reason: str = "manual kill switch") -> None:
         await self.store.update_state(running=False, kill_switch=True, kill_switch_reason=reason)
         logger.warning("EMERGENCY KILL SWITCH ACTIVATED: %s — closing all open positions", reason)
+        # Only the automatic daily-drawdown trip gets a push — see the
+        # identical reasoning in futures_bot.py.emergency_kill.
+        if reason.startswith("Daily drawdown"):
+            asyncio.create_task(
+                self.notifier.send(
+                    "Daily loss limit hit",
+                    f"{reason}\nAll spot positions are being closed and the bot is locked until the "
+                    f"next UTC day.",
+                    level="critical",
+                )
+            )
         open_positions = await self.store.get_open_positions()
         for position in open_positions:
             try:
@@ -257,7 +271,7 @@ class TradingBot:
         trailing_pct = self.settings.trailing_stop_pct / 100
 
         if price <= position.stop_loss_price:
-            await self._close_position(position, price, "stop_loss")
+            await self._close_position(position, position.stop_loss_price, "stop_loss")
             return
 
         # Trailing activates at trailing_activate_pct unrealized gain — a
@@ -277,12 +291,16 @@ class TradingBot:
             new_high = max(position.trailing_high, price)
             trailing_stop_price = new_high * (1 - trailing_pct)
             if price <= trailing_stop_price:
-                await self._close_position(position, price, "trailing_stop")
+                await self._close_position(position, trailing_stop_price, "trailing_stop")
                 return
             if new_high != position.trailing_high:
                 await self.store.update_position(position.id, trailing_high=new_high)
 
-    async def _close_position(self, position: Position, exit_price: float, reason: str) -> None:
+    async def _close_position(self, position: Position, expected_price: float, reason: str) -> None:
+        """expected_price is the trigger level the exit was supposed to fill
+        at (stop_loss_price, or the trailing level once trailing is active —
+        see the two call sites in _manage_position); used below to detect
+        excessive slippage on the actual fill."""
         try:
             fill = await self.broker.sell(position.symbol, position.qty)
         except Exception:
@@ -315,6 +333,23 @@ class TradingBot:
             pnl_pct,
             reason,
         )
+
+        # Only these two reasons have a real "expected price" to compare
+        # against; a manual/kill close is an intentional market exit, not a
+        # slippage event.
+        if reason in ("stop_loss", "trailing_stop") and self.risk.is_slippage_excessive(
+            fill.price, expected_price
+        ):
+            deviation_pct = abs(fill.price - expected_price) / expected_price * 100
+            asyncio.create_task(
+                self.notifier.send(
+                    "Excessive slippage on close",
+                    f"{position.symbol} {reason} expected {expected_price:.4f}, filled {fill.price:.4f} "
+                    f"({deviation_pct:.2f}% away).",
+                    level="warning",
+                )
+            )
+
         await self._record_trade_outcome(pnl_quote)
 
     async def _record_trade_outcome(self, pnl_quote: float) -> None:
@@ -340,6 +375,16 @@ class TradingBot:
                 self.settings.consecutive_loss_threshold, self.settings.consecutive_loss_pause_minutes,
                 self.settings.consecutive_loss_reduced_trades,
                 100 - self.settings.consecutive_loss_size_reduction_pct,
+            )
+            asyncio.create_task(
+                self.notifier.send(
+                    "Circuit breaker activated",
+                    f"{self.settings.consecutive_loss_threshold} losses in a row — new entries paused for "
+                    f"{self.settings.consecutive_loss_pause_minutes:.0f} min, then "
+                    f"{self.settings.consecutive_loss_reduced_trades} trades at "
+                    f"{100 - self.settings.consecutive_loss_size_reduction_pct:.0f}% size.",
+                    level="critical",
+                )
             )
         else:
             await self.store.update_state(consecutive_losses=consecutive_losses)

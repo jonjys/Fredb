@@ -1,3 +1,4 @@
+# app/risk.py
 """Risk management: position sizing, exposure limits, and the daily kill-switch.
 
 This module is the most important piece of the bot. Every entry must pass
@@ -216,3 +217,15 @@ class RiskManager:
         the post-throttle trades are left) — no side effects here."""
         reduction = self.settings.consecutive_loss_size_reduction_pct / 100
         return (1.0 - reduction) if reduced_size_trades_remaining > 0 else 1.0
+
+    # ---- Slippage alerting --------------------------------------------------
+    def is_slippage_excessive(self, fill_price: float, expected_price: float) -> bool:
+        """True when a stop/trailing-stop fill landed further from the level
+        it was supposed to trigger at than settings.slippage_alert_pct — the
+        threshold for "this is worth waking someone up about" rather than
+        just the normal, small, already-priced-in slippage_buffer_pct.
+        """
+        if expected_price <= 0:
+            return False
+        deviation_pct = abs(fill_price - expected_price) / expected_price * 100
+        return deviation_pct >= self.settings.slippage_alert_pct

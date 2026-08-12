@@ -1,3 +1,4 @@
+# app/schemas.py
 """Pydantic response/request schemas for the dashboard API."""
 from __future__ import annotations
 
@@ -21,6 +22,8 @@ class StatusResponse(BaseModel):
     open_positions_count: int
     max_concurrent_positions: int
     throttle_paused_until: float = 0.0  # unix ts; 0 = not paused by the consecutive-loss breaker
+    consecutive_losses: int = 0
+    reduced_size_trades_remaining: int = 0
 
 
 class PositionOut(BaseModel):
@@ -123,6 +126,8 @@ class FuturesStatusResponse(BaseModel):
     auto_leverage_min: float
     auto_leverage_max: float
     throttle_paused_until: float = 0.0
+    consecutive_losses: int = 0
+    reduced_size_trades_remaining: int = 0
 
 
 class FuturesPositionOut(BaseModel):
