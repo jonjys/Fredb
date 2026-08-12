@@ -1,3 +1,4 @@
+// app/components/FuturesDashboard.tsx
 "use client";
 
 import { usePoll } from "@/lib/usePoll";
@@ -21,6 +22,7 @@ import LiveOrdersPanel, { LiveOrderRowData } from "@/components/LiveOrdersPanel"
 import FuturesTradeHistory from "@/components/FuturesTradeHistory";
 import LiveLog from "@/components/LiveLog";
 import LeverageSelector from "@/components/LeverageSelector";
+import CircuitBreakerStatus from "@/components/CircuitBreakerStatus";
 import { MobileSection } from "@/components/DashboardViewContext";
 
 export default function FuturesDashboard() {
@@ -147,9 +149,18 @@ export default function FuturesDashboard() {
       </MobileSection>
 
       <MobileSection view="settings">
-        <div className="rounded-xl border border-border bg-surface p-4 text-sm text-muted">
-          Futures risk settings are configured server-side (see backend/.env) — the leverage
-          control above is the one live-adjustable setting exposed here.
+        <div className="space-y-3 md:space-y-6">
+          <CircuitBreakerStatus
+            data={{
+              consecutiveLosses: status?.consecutive_losses ?? 0,
+              throttlePausedUntil: status?.throttle_paused_until ?? 0,
+              reducedSizeTradesRemaining: status?.reduced_size_trades_remaining ?? 0,
+            }}
+          />
+          <div className="rounded-xl border border-border bg-surface p-4 text-sm text-muted">
+            Futures risk settings are configured server-side (see backend/.env) — the leverage
+            control above is the one live-adjustable setting exposed here.
+          </div>
         </div>
       </MobileSection>
     </div>

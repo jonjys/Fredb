@@ -104,14 +104,20 @@ there is no obligation to actually use the high end of it. Treat 25–50x as
 "available if you understand exactly what you're doing," not as a
 starting point.
 
-### Symbol selection: not limited to BTC/ETH
+### Symbol selection: fixed to ultra-liquid pairs by default
 
-`FUTURES_SYMBOL_MODE=dynamic` (the default) scans the top
-`FUTURES_DYNAMIC_TOP_N` (default 10) USDT-M perpetuals by 24h volume every
-5 minutes, instead of trading a fixed pair list — any sufficiently liquid
-coin (SOL, ADA, DOGE, a meme coin once it has real volume behind it, etc.)
-becomes tradeable automatically as its volume rank changes, with no config
-change needed.
+`FUTURES_SYMBOL_MODE=fixed` (the default) trades only the explicit
+`FUTURES_SYMBOLS` list — out of the box, BTC/ETH/SOL USDT-M perpetuals and
+nothing else. Leverage and mean reversion is exactly the combination that
+gets hurt most by thin-book altcoin slippage, so the default deliberately
+stays narrow rather than opportunistic.
+
+`FUTURES_SYMBOL_MODE=dynamic` is still available for anyone who wants the
+wider universe back: it scans the top `FUTURES_DYNAMIC_TOP_N` (default 10)
+USDT-M perpetuals by 24h volume every 5 minutes instead of a fixed pair
+list — any sufficiently liquid coin (ADA, DOGE, a meme coin once it has
+real volume behind it, etc.) becomes tradeable automatically as its volume
+rank changes, with no config change needed.
 
 The important guard here is `FUTURES_MIN_24H_VOLUME_USD` (default $5M): a
 low-volume pair with leverage is a genuinely dangerous combination — wide

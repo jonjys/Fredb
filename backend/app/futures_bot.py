@@ -1,3 +1,4 @@
+# app/futures_bot.py
 """Futures (leveraged) trading bot orchestration loop.
 
 Structurally mirrors bot.py (spot), but a separate class rather than a
@@ -24,6 +25,7 @@ from app.config import Settings
 from app.exchange import FuturesBroker, build_futures_broker
 from app.mean_reversion import MeanReversionStrategy, attach_htf_bias
 from app.models import FuturesPosition, FuturesTrade
+from app.notifications import Notifier
 from app.risk import RiskManager
 from app.state_store import StateStore
 from app.strategy import _atr
@@ -75,6 +77,7 @@ class FuturesTradingBot:
             min_distance_std=settings.mr_min_distance_std,
         )
         self.risk = RiskManager(settings)
+        self.notifier = Notifier(settings, source="futures")
         self._task: Optional[asyncio.Task] = None
         self._stopping = False
         self._last_prices: Dict[str, float] = {}
@@ -165,6 +168,18 @@ class FuturesTradingBot:
         logger.warning(
             "FUTURES EMERGENCY KILL SWITCH ACTIVATED: %s — closing all open positions", reason
         )
+        # Only the automatic daily-drawdown trip gets a push — a manual kill
+        # from the dashboard is something the user just clicked themselves,
+        # a notification about it would just be noise.
+        if reason.startswith("Daily drawdown"):
+            asyncio.create_task(
+                self.notifier.send(
+                    "Daily loss limit hit",
+                    f"{reason}\nAll futures positions are being closed and the bot is locked until the "
+                    f"next UTC day.",
+                    level="critical",
+                )
+            )
         open_positions = await self.store.get_open_positions()
         for position in open_positions:
             try:
@@ -539,6 +554,25 @@ class FuturesTradingBot:
             position.side.upper(), position.symbol, fill.qty, fill.price, pnl_quote, pnl_pct,
             position.leverage, reason,
         )
+
+        # position.stop_loss_price is the trigger level the exit was
+        # supposed to fill at (it holds the trailing level too, once
+        # trailing is active — see _manage_position). Only these two reasons
+        # have a real "expected price" to compare against; a manual/kill
+        # close isn't a slippage event, it's an intentional market exit.
+        if reason in ("stop_loss", "trailing_stop") and self.risk.is_slippage_excessive(
+            fill.price, position.stop_loss_price
+        ):
+            deviation_pct = abs(fill.price - position.stop_loss_price) / position.stop_loss_price * 100
+            asyncio.create_task(
+                self.notifier.send(
+                    "Excessive slippage on close",
+                    f"{position.side.upper()} {position.symbol} {reason} expected {position.stop_loss_price:.4f}, "
+                    f"filled {fill.price:.4f} ({deviation_pct:.2f}% away).",
+                    level="warning",
+                )
+            )
+
         await self._record_trade_outcome(pnl_quote)
 
     async def _record_trade_outcome(self, pnl_quote: float) -> None:
@@ -569,6 +603,16 @@ class FuturesTradingBot:
                 self.settings.consecutive_loss_threshold, self.settings.consecutive_loss_pause_minutes,
                 self.settings.consecutive_loss_reduced_trades,
                 100 - self.settings.consecutive_loss_size_reduction_pct,
+            )
+            asyncio.create_task(
+                self.notifier.send(
+                    "Circuit breaker activated",
+                    f"{self.settings.consecutive_loss_threshold} losses in a row — new entries paused for "
+                    f"{self.settings.consecutive_loss_pause_minutes:.0f} min, then "
+                    f"{self.settings.consecutive_loss_reduced_trades} trades at "
+                    f"{100 - self.settings.consecutive_loss_size_reduction_pct:.0f}% size.",
+                    level="critical",
+                )
             )
         else:
             await self.store.update_state(consecutive_losses=consecutive_losses)
