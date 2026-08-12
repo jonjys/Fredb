@@ -44,10 +44,19 @@ class TradingBot:
             min_distance_std=settings.mr_min_distance_std,
         )
         self.risk = RiskManager(settings)
+        if not self.risk.is_take_profit_worth_it():
+            required = self.risk.round_trip_cost_pct() * settings.min_tp_cost_multiple
+            raise RuntimeError(
+                f"CONFIG ERROR: take_profit_pct={settings.take_profit_pct:.2f}% is below the required "
+                f"minimum of {required:.2f}% ({settings.min_tp_cost_multiple:.1f}x round-trip cost of "
+                f"{self.risk.round_trip_cost_pct():.2f}%) — refusing to start. Raise take_profit_pct or "
+                f"lower fees/slippage_buffer_pct."
+            )
         self.notifier = Notifier(settings, source="spot")
         self._task: Optional[asyncio.Task] = None
         self._stopping = False
         self._last_prices: Dict[str, float] = {}
+        self._last_skip_reason: Dict[str, str] = {}
 
     async def start_background_loop(self) -> None:
         await asyncio.to_thread(self.store.init, self.settings.paper_starting_balance)
@@ -181,6 +190,16 @@ class TradingBot:
             await self.store.update_state(paper_balance=quote_balance)
         return quote_balance + positions_value
 
+    def _log_skip(self, symbol: str, reason: str) -> None:
+        """Log why a symbol didn't get an entry this tick — but only when
+        the reason actually changes. Without the throttle this would log
+        every symbol every poll_interval_seconds (every 5s by default),
+        flooding the 500-entry log ring buffer and pushing out real
+        OPENED/CLOSED lines within minutes."""
+        if self._last_skip_reason.get(symbol) != reason:
+            logger.info("SKIP %s: %s", symbol, reason)
+            self._last_skip_reason[symbol] = reason
+
     async def _evaluate_entry(self, symbol: str, equity: float) -> None:
         try:
             df_1m = await self.broker.get_ohlcv(symbol, self.settings.timeframe, limit=100)
@@ -197,10 +216,18 @@ class TradingBot:
         # hold. Short signals are simply skipped here; the futures bot is
         # what acts on them.
         if signal.action != "long":
+            reason = signal.reason if signal.action == "hold" else f"short signal not actionable on spot: {signal.reason}"
+            self._log_skip(symbol, reason)
             return
 
         sizing = self.risk.size_position(equity, signal.close, signal.atr, signal.atr_pct)
         if sizing is None or sizing.qty <= 0:
+            logger.warning(
+                "SIZE_ZERO %s: equity=%.2f risk_pct=%.2f%% entry=%.4f atr_pct=%.3f%% — sizing "
+                "returned %s",
+                symbol, equity, self.settings.max_risk_per_trade_pct, signal.close, signal.atr_pct,
+                "None" if sizing is None else f"qty={sizing.qty:.6f}",
+            )
             return
 
         state = await self.store.get_state()

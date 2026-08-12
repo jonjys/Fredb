@@ -1,3 +1,4 @@
+# tests/test_mean_reversion.py
 import os
 import sys
 
@@ -45,7 +46,12 @@ def test_hold_in_flat_market_no_extension():
     closes = [100.0] * 60
     df = make_1m_df(closes)
     df["htf_bias"] = "neutral"
-    assert strategy.generate_signal(df).action == "hold"
+    signal = strategy.generate_signal(df)
+    assert signal.action == "hold"
+    # Zero volatility collapses the bands onto the price itself, so close
+    # trivially "touches" the band — the real reason it holds is the 0σ
+    # extension, far under the min_distance_std gate.
+    assert "dist=" in signal.reason
 
 
 def test_long_on_oversold_extension_with_volume_and_neutral_htf():
@@ -76,6 +82,7 @@ def test_long_blocked_when_htf_is_bearish():
     df["htf_bias"] = "bearish"
     signal = strategy.generate_signal(df)
     assert signal.action == "hold"
+    assert "HTF=bearish" in signal.reason
 
 
 def test_short_on_overbought_extension_mirrors_long():
@@ -97,7 +104,9 @@ def test_no_signal_without_volume_confirmation():
         closes.append(closes[-1] - 1.0)
     df = make_1m_df(closes)  # flat volume, no spike -> volume filter fails
     df["htf_bias"] = "neutral"
-    assert strategy.generate_signal(df).action == "hold"
+    signal = strategy.generate_signal(df)
+    assert signal.action == "hold"
+    assert "vol=" in signal.reason
 
 
 def test_compute_htf_bias_labels_rising_ema_as_bullish():
