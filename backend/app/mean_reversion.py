@@ -150,4 +150,54 @@ class MeanReversionStrategy:
             )
             return Signal("short", reason, last_atr, atr_pct, last_close)
 
-        return Signal("hold", "no mean-reversion setup", last_atr, atr_pct, last_close)
+        return Signal(
+            "hold",
+            self._skip_reason(
+                last_close, last_lower, last_upper, last_rsi, volume_ok, distance_ok,
+                distance_std, htf_bias, last_vol, last_vol_sma,
+            ),
+            last_atr, atr_pct, last_close,
+        )
+
+    def _skip_reason(
+        self,
+        last_close: float,
+        last_lower: float,
+        last_upper: float,
+        last_rsi: float,
+        volume_ok: bool,
+        distance_ok: bool,
+        distance_std: float,
+        htf_bias: HtfBias,
+        last_vol: float,
+        last_vol_sma: float,
+    ) -> str:
+        """Which specific gate blocked entry this bar, for the closer of the
+        two bands (there's no meaningful "why not long" story on a bar that
+        isn't even near the lower band). Reported per-symbol by the caller,
+        throttled to only log when the reason actually changes — see
+        bot.py/futures_bot.py._evaluate_entry.
+        """
+        touching_lower = last_close <= last_lower
+        touching_upper = last_close >= last_upper
+        if not touching_lower and not touching_upper:
+            return f"no band touch (close={last_close:.4f}, bands=[{last_lower:.4f},{last_upper:.4f}])"
+
+        side, rsi_gate, rsi_threshold, htf_block = (
+            ("long", last_rsi >= self.rsi_oversold, self.rsi_oversold, "bearish")
+            if touching_lower
+            else ("short", last_rsi <= self.rsi_overbought, self.rsi_overbought, "bullish")
+        )
+        blockers = []
+        if rsi_gate:
+            op = ">=" if side == "long" else "<="
+            blockers.append(f"RSI={last_rsi:.1f}{op}{rsi_threshold:.0f}")
+        if not volume_ok:
+            blockers.append(f"vol={last_vol:.0f}<=SMA={last_vol_sma:.0f}")
+        if not distance_ok:
+            blockers.append(f"dist={distance_std:.2f}σ<{self.min_distance_std:.2f}σ")
+        if htf_bias == htf_block:
+            blockers.append(f"HTF={htf_bias}")
+        if not blockers:
+            blockers.append("unknown")  # shouldn't happen — every band touch not taken has a reason
+        return f"SKIP {side}: " + ", ".join(blockers)

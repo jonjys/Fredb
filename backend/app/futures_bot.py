@@ -77,10 +77,19 @@ class FuturesTradingBot:
             min_distance_std=settings.mr_min_distance_std,
         )
         self.risk = RiskManager(settings)
+        if not self.risk.is_take_profit_worth_it():
+            required = self.risk.round_trip_cost_pct() * settings.min_tp_cost_multiple
+            raise RuntimeError(
+                f"CONFIG ERROR: take_profit_pct={settings.take_profit_pct:.2f}% is below the required "
+                f"minimum of {required:.2f}% ({settings.min_tp_cost_multiple:.1f}x round-trip cost of "
+                f"{self.risk.round_trip_cost_pct():.2f}%) — refusing to start. Raise take_profit_pct or "
+                f"lower fees/slippage_buffer_pct."
+            )
         self.notifier = Notifier(settings, source="futures")
         self._task: Optional[asyncio.Task] = None
         self._stopping = False
         self._last_prices: Dict[str, float] = {}
+        self._last_skip_reason: Dict[str, str] = {}
         self._dynamic_symbols: List[str] = []
         self._dynamic_symbols_refreshed_at: float = 0.0
         self._leverage_refreshed_at: float = 0.0
@@ -90,6 +99,20 @@ class FuturesTradingBot:
         state = await self.store.get_state()
         if self.settings.futures_mode == "paper":
             self.broker.quote_balance = state.paper_balance  # type: ignore[attr-defined]
+        # A manually-set leverage from a previous, higher futures_max_leverage
+        # persists in state across redeploys (state_store.init doesn't reset
+        # it). size_position_leveraged already re-clamps every new trade
+        # against the *current* futures_max_leverage regardless, so this is
+        # cosmetic-but-important: without it the dashboard would keep
+        # showing e.g. "50x" as selected even though real entries are
+        # already silently capped at the new, lower ceiling.
+        if state.leverage > self.settings.futures_max_leverage:
+            clamped = self.settings.futures_max_leverage
+            logger.warning(
+                "Stored futures leverage %sx exceeds configured max %sx — clamping down on startup",
+                state.leverage, clamped,
+            )
+            await self.store.update_state(leverage=clamped)
         self._task = asyncio.create_task(self._run_loop())
         symbol_mode_desc = (
             f"dynamic (top {self.settings.futures_dynamic_top_n} by 24h volume, "
@@ -253,6 +276,12 @@ class FuturesTradingBot:
                 symbols = await self.broker.get_top_symbols(
                     self.settings.futures_dynamic_top_n, self.settings.futures_min_24h_volume_usd
                 )
+                excluded = set(self.settings.futures_excluded_symbols)
+                if excluded:
+                    dropped = [s for s in symbols if s in excluded]
+                    symbols = [s for s in symbols if s not in excluded]
+                    if dropped:
+                        logger.info("Dynamic symbol scan excluded blacklisted pairs: %s", ", ".join(dropped))
                 if symbols:
                     self._dynamic_symbols = symbols
                     self._dynamic_symbols_refreshed_at = now
@@ -311,6 +340,15 @@ class FuturesTradingBot:
             await self.store.update_state(paper_balance=free_balance)
         return free_balance + positions_equity
 
+    def _log_skip(self, symbol: str, reason: str) -> None:
+        """Log why a symbol didn't get an entry this tick — only when the
+        reason changes, otherwise this floods the log ring buffer at one
+        line per open symbol per poll_interval_seconds. See bot.py's
+        identical helper for the same rationale."""
+        if self._last_skip_reason.get(symbol) != reason:
+            logger.info("SKIP %s: %s", symbol, reason)
+            self._last_skip_reason[symbol] = reason
+
     async def _evaluate_entry(self, symbol: str, equity: float, requested_leverage: float) -> None:
         try:
             df_1m = await self.broker.get_ohlcv(symbol, self.settings.timeframe, limit=100)
@@ -324,6 +362,7 @@ class FuturesTradingBot:
         df = attach_htf_bias(df_1m, df_htf, ema_period=self.settings.htf_ema_period)
         signal = self.strategy.generate_signal(df)
         if signal.action not in ("long", "short"):
+            self._log_skip(symbol, signal.reason)
             return
         side = signal.action
 
@@ -332,6 +371,13 @@ class FuturesTradingBot:
             self.settings.futures_max_leverage, side=side,
         )
         if sizing is None or sizing.qty <= 0:
+            logger.warning(
+                "SIZE_ZERO %s %s: equity=%.2f risk_pct=%.2f%% entry=%.4f atr_pct=%.3f%% "
+                "requested_leverage=%sx — sizing returned %s",
+                side, symbol, equity, self.settings.max_risk_per_trade_pct, signal.close,
+                signal.atr_pct, requested_leverage,
+                "None" if sizing is None else f"qty={sizing.qty:.6f}",
+            )
             return
 
         # Consecutive-loss circuit breaker: scale size down while inside the
