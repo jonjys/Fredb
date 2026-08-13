@@ -4,6 +4,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import pytest
+
 from app.config import Settings
 from app.risk import RiskManager
 
@@ -95,3 +97,39 @@ def test_slippage_excessive_only_past_the_configured_threshold():
 def test_slippage_excessive_false_for_invalid_expected_price():
     risk = make_risk()
     assert risk.is_slippage_excessive(fill_price=100.0, expected_price=0.0) is False
+
+
+def test_taker_leakage_flags_fee_rate_past_the_configured_multiple():
+    risk = make_risk(maker_fee_pct=0.02, taker_leakage_fee_multiple=1.2)
+    # 0.02% on a $1000 notional = $0.20 expected maker fee; 1.2x threshold = $0.24.
+    assert risk.is_taker_leakage(fee_quote=0.20, notional=1000) is False
+    assert risk.is_taker_leakage(fee_quote=0.30, notional=1000) is True  # 0.03% > 0.024%
+
+
+def test_taker_leakage_false_for_zero_notional():
+    risk = make_risk()
+    assert risk.is_taker_leakage(fee_quote=1.0, notional=0.0) is False
+
+
+def test_volatility_throttle_halves_risk_amount_above_threshold():
+    # max_concurrent_positions=1 keeps the allocation cap (equity/positions)
+    # well above both qty_by_risk figures, so risk_amount is the binding
+    # constraint in both cases and the throttle's effect isn't masked by it.
+    risk = make_risk(
+        high_volatility_atr_pct=1.5, high_volatility_risk_multiplier=0.5,
+        max_notional_pct_of_equity=1.0, max_concurrent_positions=1,
+    )
+    calm = risk.size_position(equity=1000, entry_price=100, atr=1.0, atr_pct=1.0)
+    volatile = risk.size_position(equity=1000, entry_price=100, atr=2.0, atr_pct=2.0)
+    assert calm is not None and volatile is not None
+    calm_risk = calm.qty * (calm.entry_price - calm.stop_loss_price)
+    volatile_risk = volatile.qty * (volatile.entry_price - volatile.stop_loss_price)
+    assert volatile_risk == pytest.approx(calm_risk * 0.5, rel=1e-6)
+
+
+def test_notional_cap_limits_position_size_even_with_room_under_risk_budget():
+    risk = make_risk(max_risk_per_trade_pct=50.0, max_notional_pct_of_equity=0.20, max_concurrent_positions=10)
+    result = risk.size_position(equity=1000, entry_price=100, atr=0.1, atr_pct=0.1)
+    assert result is not None
+    notional = result.qty * result.entry_price
+    assert notional <= 1000 * 0.20 + 1e-6

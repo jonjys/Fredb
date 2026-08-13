@@ -306,11 +306,43 @@ async def wait_for_fill_or_cancel(
     return None
 
 
+async def place_post_only_with_retries(
+    client: "ExchangeClient",
+    symbol: str,
+    side: str,
+    qty: float,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+    max_retries: int,
+) -> "tuple[Optional[dict], int]":
+    """Place a postOnly/GTX limit at the current touch price. On timeout,
+    cancel and repost at a *fresh* touch price — the market may have moved
+    since the first quote — up to max_retries additional attempts. Every
+    attempt is still GTX, so this never crosses the spread to force a fill;
+    it only refreshes a stale price instead of giving up after one try.
+
+    Returns (filled_order_dict_or_None, retries_used).
+    """
+    attempts = max_retries + 1
+    for attempt in range(attempts):
+        best_bid, best_ask = await client.fetch_order_book_top(symbol)
+        price = best_bid if side == "buy" else best_ask
+        if price <= 0:
+            return None, attempt
+        order = await client.create_post_only_limit(symbol, side, qty, price)
+        order_id = str(order.get("id", ""))
+        filled = await wait_for_fill_or_cancel(client, order_id, symbol, timeout_seconds, poll_interval_seconds)
+        if filled is not None and float(filled.get("filled") or 0) > 0:
+            return filled, attempt
+    return None, attempts - 1
+
+
 @dataclass
 class Fill:
     price: float
     qty: float
     fee_quote: float
+    retries_used: int = 0
 
 
 class Broker(abc.ABC):
@@ -371,22 +403,17 @@ class RealBroker(Broker):
 
     async def _post_only(self, symbol: str, side: str, qty: float, timeout_seconds: Optional[float]) -> Optional[Fill]:
         timeout_seconds = timeout_seconds if timeout_seconds is not None else self.settings.post_only_timeout_seconds
-        best_bid, best_ask = await self.client.fetch_order_book_top(symbol)
-        price = best_bid if side == "buy" else best_ask
-        if price <= 0:
-            return None
-        order = await self.client.create_post_only_limit(symbol, side, qty, price)
-        order_id = str(order.get("id", ""))
-        filled = await wait_for_fill_or_cancel(
-            self.client, order_id, symbol, timeout_seconds, self.settings.post_only_poll_interval_seconds
+        filled, retries_used = await place_post_only_with_retries(
+            self.client, symbol, side, qty, timeout_seconds,
+            self.settings.post_only_poll_interval_seconds, self.settings.post_only_max_retries,
         )
         if filled is None:
             return None
-        fill_price = float(filled.get("average") or filled.get("price") or price)
+        fill_price = float(filled.get("average") or filled.get("price") or 0.0)
         qty_filled = float(filled.get("filled") or 0.0)
-        if qty_filled <= 0:
+        if qty_filled <= 0 or fill_price <= 0:
             return None
-        return Fill(price=fill_price, qty=qty_filled, fee_quote=_extract_fee(filled))
+        return Fill(price=fill_price, qty=qty_filled, fee_quote=_extract_fee(filled), retries_used=retries_used)
 
     async def buy_post_only(self, symbol: str, qty: float, timeout_seconds: Optional[float] = None) -> Optional[Fill]:
         """Entry-only: places at the best bid with postOnly/GTX so it can
@@ -520,6 +547,7 @@ class FuturesFill:
     fee_quote: float
     stop_order_id: str = ""
     take_profit_order_id: str = ""
+    retries_used: int = 0
 
 
 class FuturesBroker(abc.ABC):
@@ -677,22 +705,16 @@ class RealFuturesBroker(FuturesBroker):
         is never a dangling protective order with nothing to protect."""
         timeout_seconds = timeout_seconds if timeout_seconds is not None else self.settings.post_only_timeout_seconds
         await self.client.set_leverage(symbol, leverage)
-        best_bid, best_ask = await self.client.fetch_order_book_top(symbol)
         order_side = "sell" if side == "short" else "buy"
-        price = best_bid if order_side == "buy" else best_ask
-        if price <= 0:
-            return None
-
-        order = await self.client.create_post_only_limit(symbol, order_side, qty, price)
-        order_id = str(order.get("id", ""))
-        filled = await wait_for_fill_or_cancel(
-            self.client, order_id, symbol, timeout_seconds, self.settings.post_only_poll_interval_seconds
+        filled, retries_used = await place_post_only_with_retries(
+            self.client, symbol, order_side, qty, timeout_seconds,
+            self.settings.post_only_poll_interval_seconds, self.settings.post_only_max_retries,
         )
         if filled is None:
             return None
-        fill_price = float(filled.get("average") or filled.get("price") or price)
+        fill_price = float(filled.get("average") or filled.get("price") or 0.0)
         filled_qty = float(filled.get("filled") or 0.0)
-        if filled_qty <= 0:
+        if filled_qty <= 0 or fill_price <= 0:
             return None
         fee = _extract_fee(filled)
 
@@ -705,6 +727,7 @@ class RealFuturesBroker(FuturesBroker):
             fee_quote=fee,
             stop_order_id=str(stop_order.get("id", "")),
             take_profit_order_id=str(tp_order.get("id", "")),
+            retries_used=retries_used,
         )
 
     async def update_stop_order(

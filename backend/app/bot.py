@@ -23,6 +23,7 @@ from app.exchange import Broker, build_broker
 from app.mean_reversion import MeanReversionStrategy, attach_htf_bias
 from app.models import Position, Trade
 from app.notifications import Notifier
+from app.regime import regime_block_reason
 from app.risk import RiskManager
 from app.state_store import StateStore
 
@@ -190,6 +191,28 @@ class TradingBot:
             await self.store.update_state(paper_balance=quote_balance)
         return quote_balance + positions_value
 
+    def _check_taker_leakage(self, symbol: str, fill) -> None:
+        """Entry fills should structurally never pay more than the maker
+        rate — GTX/postOnly orders can only fill as maker or get rejected —
+        so this alerting, not routine cost monitoring to size-throttle
+        around. See RiskManager.is_taker_leakage for the full rationale."""
+        notional = fill.price * fill.qty
+        if self.risk.is_taker_leakage(fill.fee_quote, notional):
+            fee_pct = (fill.fee_quote / notional * 100) if notional else 0.0
+            logger.warning(
+                "TAKER_LEAKAGE %s: fee=%.4f%% of notional (expected ~%.4f%% maker) on a fill that "
+                "should have been maker-only — investigate order type/exchange fee schedule",
+                symbol, fee_pct, self.settings.maker_fee_pct,
+            )
+            asyncio.create_task(
+                self.notifier.send(
+                    "Taker leakage detected",
+                    f"{symbol} entry fill paid {fee_pct:.4f}% fee vs expected ~{self.settings.maker_fee_pct:.4f}% "
+                    f"maker — a postOnly order should never fill as taker. Worth investigating.",
+                    level="warning",
+                )
+            )
+
     def _log_skip(self, symbol: str, reason: str) -> None:
         """Log why a symbol didn't get an entry this tick — but only when
         the reason actually changes. Without the throttle this would log
@@ -220,6 +243,11 @@ class TradingBot:
             self._log_skip(symbol, reason)
             return
 
+        block_reason = await regime_block_reason(self.broker, symbol, "long", self.settings)
+        if block_reason:
+            self._log_skip(symbol, f"regime filter: {block_reason}")
+            return
+
         sizing = self.risk.size_position(equity, signal.close, signal.atr, signal.atr_pct)
         if sizing is None or sizing.qty <= 0:
             logger.warning(
@@ -242,10 +270,13 @@ class TradingBot:
 
         if fill is None:
             logger.info(
-                "%s: post-only entry not filled within %.0fs, cancelled — will re-evaluate",
-                symbol, self.settings.post_only_timeout_seconds,
+                "%s: post-only entry not filled after %d attempt(s) (%.0fs each), cancelled — "
+                "will re-evaluate",
+                symbol, self.settings.post_only_max_retries + 1, self.settings.post_only_timeout_seconds,
             )
             return
+
+        self._check_taker_leakage(symbol, fill)
 
         if size_multiplier < 1.0:
             await self.store.update_state(

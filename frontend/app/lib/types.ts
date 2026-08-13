@@ -163,6 +163,20 @@ export interface OrderBookData {
   asks: [number, number][];
 }
 
+export interface AutotuneStatusOut {
+  enabled: boolean;
+  auto_apply: boolean;
+  hour_utc: number;
+  lookback_days: number;
+  ran_at: number | null;
+  current_tp: number | null;
+  current_pf: number | null;
+  suggested_tp: number | null;
+  suggested_pf: number | null;
+  applied: boolean | null;
+  note: string | null;
+}
+
 export interface FuturesTradeOut {
   id: number;
   symbol: string;

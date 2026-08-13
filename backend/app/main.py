@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.autotune import Autotuner
 from app.bot import TradingBot
 from app.config import settings
 from dataclasses import asdict
@@ -25,6 +26,7 @@ from app.stats import compute_stats
 from app.logger import log_buffer, setup_logging
 from app.models import FuturesBotState, FuturesEquitySnapshot, FuturesPosition, FuturesTrade
 from app.schemas import (
+    AutotuneStatusOut,
     CandlePoint,
     EquityPointOut,
     FuturesLeverageUpdate,
@@ -52,6 +54,11 @@ futures_store = StateStore(
 )
 futures_bot = FuturesTradingBot(settings, futures_store)
 
+# Autotune needs futures-shaped settings (leverage, margin) that BacktestEngine
+# assumes — gated on futures_enabled rather than run against the spot bot's
+# economics, which the engine was never built to model.
+autotuner = Autotuner(settings, settings.futures_symbols) if settings.futures_enabled else None
+
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -65,10 +72,14 @@ async def lifespan(app: FastAPI):
     await bot.start_background_loop()
     if settings.futures_enabled:
         await futures_bot.start_background_loop()
+        if autotuner and settings.autotune_enabled:
+            autotuner.start()
     yield
     await bot.shutdown()
     if settings.futures_enabled:
         await futures_bot.shutdown()
+        if autotuner:
+            autotuner.stop()
 
 
 def require_futures_enabled() -> None:
@@ -555,3 +566,48 @@ async def get_futures_market_ohlcv(symbol: str, timeframe: str = "1m", limit: in
 async def get_futures_market_orderbook(symbol: str, limit: int = 15):
     book = await futures_bot.broker.get_order_book(symbol, limit)
     return OrderBookOut(symbol=symbol, bids=book["bids"], asks=book["asks"])
+
+
+def _autotune_status_response() -> AutotuneStatusOut:
+    base = dict(
+        enabled=settings.autotune_enabled,
+        auto_apply=settings.autotune_auto_apply,
+        hour_utc=settings.autotune_hour_utc,
+        lookback_days=settings.autotune_lookback_days,
+        current_tp=settings.take_profit_pct,
+    )
+    if autotuner is None or autotuner.last_result is None:
+        return AutotuneStatusOut(**base)
+    result = autotuner.last_result
+    return AutotuneStatusOut(
+        **{**base, "current_tp": result.current_tp},
+        ran_at=result.ran_at,
+        current_pf=result.current_pf,
+        suggested_tp=result.suggested_tp,
+        suggested_pf=result.suggested_pf,
+        applied=result.applied,
+        note=result.note,
+    )
+
+
+@app.get(
+    "/api/autotune/status",
+    response_model=AutotuneStatusOut,
+    dependencies=[Depends(require_auth), Depends(require_futures_enabled)],
+)
+async def get_autotune_status():
+    return _autotune_status_response()
+
+
+@app.post(
+    "/api/autotune/run",
+    response_model=AutotuneStatusOut,
+    dependencies=[Depends(require_auth), Depends(require_futures_enabled)],
+)
+async def run_autotune_now():
+    """Manual trigger — same grid search the nightly schedule runs, useful
+    to preview a suggestion without waiting for autotune_hour_utc."""
+    if autotuner is None:
+        raise HTTPException(status_code=503, detail="Autotune is not available on this backend")
+    await autotuner.run_now()
+    return _autotune_status_response()
