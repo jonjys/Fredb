@@ -71,12 +71,25 @@ class RiskManager:
         ) / 100
 
         risk_amount = equity * (self.settings.max_risk_per_trade_pct / 100)
+        # Volatility throttle: the wider stop from atr_pct*atr_multiplier
+        # above already shrinks qty on a volatile bar, but not the dollar
+        # risk itself — a news-spike bar can still land a full risk_pct bet
+        # on a stop that's about to be tested immediately. Cut risk_amount
+        # itself once ATR% crosses into unusually-volatile territory.
+        if atr_pct > self.settings.high_volatility_atr_pct:
+            risk_amount *= self.settings.high_volatility_risk_multiplier
         qty_by_risk = risk_amount / (entry_price * stop_distance_pct)
 
         max_notional_per_position = equity / max(1, self.settings.max_concurrent_positions)
         qty_by_allocation = max_notional_per_position / entry_price
 
-        qty = min(qty_by_risk, qty_by_allocation)
+        # Hard notional ceiling, independent of the risk-based qty above —
+        # a backstop against tail/gap risk the modeled stop can't react to
+        # (an exchange outage, a flash crash), not another risk-per-trade
+        # control layered on the same thing.
+        qty_by_notional_cap = (equity * self.settings.max_notional_pct_of_equity) / entry_price
+
+        qty = min(qty_by_risk, qty_by_allocation, qty_by_notional_cap)
         if qty <= 0:
             return None
 
@@ -217,6 +230,20 @@ class RiskManager:
         the post-throttle trades are left) — no side effects here."""
         reduction = self.settings.consecutive_loss_size_reduction_pct / 100
         return (1.0 - reduction) if reduced_size_trades_remaining > 0 else 1.0
+
+    # ---- Execution-quality alerting -----------------------------------------
+    def is_taker_leakage(self, fee_quote: float, notional: float) -> bool:
+        """True when an entry fill's realized fee rate exceeds the expected
+        maker rate by more than taker_leakage_fee_multiple. This should
+        structurally never happen — GTX/postOnly orders can only fill as
+        maker or get rejected outright by the exchange — so seeing it at
+        all points at something upstream (a fee-schedule change, an order
+        type regression), not routine cost drift to size-throttle around.
+        """
+        if notional <= 0:
+            return False
+        fee_pct = fee_quote / notional * 100
+        return fee_pct > self.settings.maker_fee_pct * self.settings.taker_leakage_fee_multiple
 
     # ---- Slippage alerting --------------------------------------------------
     def is_slippage_excessive(self, fill_price: float, expected_price: float) -> bool:

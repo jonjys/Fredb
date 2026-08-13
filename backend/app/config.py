@@ -67,6 +67,50 @@ class Settings(BaseSettings):
     post_only_timeout_seconds: float = 10.0
     post_only_poll_interval_seconds: float = 1.0
     maker_fee_pct: float = 0.02  # Binance USDT-M futures maker rate; spot maker == taker by default
+    # On an unfilled post-only entry, cancel and repost this many times at a
+    # fresh top-of-book price before giving up — never crosses the spread
+    # (still GTX/postOnly every attempt), just refreshes a stale quote as
+    # price drifts, instead of walking away after a single attempt.
+    post_only_max_retries: int = 2
+    # An entry fill's fee rate exceeding maker_fee_pct by this multiple gets
+    # logged as TAKER_LEAKAGE and alerted. This should structurally never
+    # fire — GTX orders can only fill as maker or get rejected — so seeing
+    # it at all means something upstream (a fee-schedule change, an order
+    # type regression) needs a human, not an autonomous pause. See
+    # bot.py/futures_bot.py._check_taker_leakage.
+    taker_leakage_fee_multiple: float = 1.2
+
+    # ---- Volatility-aware risk throttle (RiskManager.size_position) --------
+    # A fixed risk_pct at 0.3% ATR and at 0.9% ATR isn't the same real
+    # exposure — the wider stop from size_position's own atr_pct*atr_multiplier
+    # term already makes qty *smaller* on volatile bars, but not smaller
+    # dollar risk. On a news-spike bar the two effects don't fully cancel;
+    # this throttle cuts risk_amount itself when ATR% crosses into
+    # "unusually volatile" territory as an extra margin of safety.
+    high_volatility_atr_pct: float = 1.5
+    high_volatility_risk_multiplier: float = 0.5
+    # Hard ceiling on gross notional exposure per position, independent of
+    # the risk-based qty calc above — a backstop against tail/gap risk
+    # (an exchange outage, a flash crash the modeled stop can't react to)
+    # rather than the everyday risk-per-trade control.
+    max_notional_pct_of_equity: float = 0.20
+
+    # ---- Regime filters (orderbook + BTC dominance) -------------------------
+    # Skip a long when the order book is this lopsided toward asks (heavy
+    # sell pressure at the touch) even if the strategy signal says long, and
+    # the mirror for shorts. 1.0 = balanced book; <0.7 means asks
+    # outweigh bids by ~43% or more.
+    regime_orderbook_imbalance_min: float = 0.7
+    regime_orderbook_depth_levels: int = 5
+    # BTC dominance (BTC's share of total crypto market cap) — a market-wide
+    # "risk-on altcoins vs risk-off into BTC" proxy that a single symbol's
+    # own order book can't tell you. Sourced from CoinGecko's free, no-key
+    # /api/v3/global endpoint (see app/regime.py) since Binance/ccxt has no
+    # dominance data. Fails open (gate skipped, not blocked) on fetch error —
+    # this is a filter, not a dependency the bot should ever halt for.
+    regime_btc_dominance_enabled: bool = True
+    regime_btc_dominance_move_threshold_pct: float = 0.5
+    regime_btc_dominance_refresh_seconds: float = 900.0
 
     # Trailing-stop activation threshold, independent of take_profit_pct.
     # Was 0.25% — well under a third of take_profit_pct — which meant
@@ -145,6 +189,33 @@ class Settings(BaseSettings):
     futures_auto_leverage_max: float = 10.0
     futures_paper_starting_balance: float = 1000.0
 
+    # ---- Nightly autotune (app/autotune.py) ----------------------------------
+    # Runs a walkforward grid-search over recent data once a day and reports
+    # whether a different take_profit_pct would have scored a meaningfully
+    # better profit factor. Deliberately suggest-only by default
+    # (autotune_auto_apply=False): a 14-day window is a small, noisy sample,
+    # and auto-mutating a live bot's risk parameters from it is a real
+    # overfitting/whipsaw risk in its own right — the dashboard surfaces the
+    # recommendation, a human decides whether to apply it. Set
+    # autotune_auto_apply=true only once you've watched a few nights of
+    # suggestions and trust them.
+    autotune_enabled: bool = True
+    autotune_auto_apply: bool = False
+    autotune_hour_utc: int = 2
+    autotune_lookback_days: int = 14
+    # Every candidate here must clear RiskManager.is_take_profit_worth_it()'s
+    # floor (round_trip_cost_pct * min_tp_cost_multiple, 0.9% at current fee
+    # defaults) — the grid search also filters at runtime in case fee
+    # settings change later, but keep this list itself already-safe so a
+    # config read alone doesn't suggest a value the bot would refuse to run.
+    autotune_tp_candidates_csv: str = Field(
+        default="1.0,1.2,1.4", validation_alias="AUTOTUNE_TP_CANDIDATES"
+    )
+    # New candidate must beat the current TP's profit factor by at least
+    # this multiple to be worth suggesting — guards against "improvement"
+    # that's really just noise around a wash.
+    autotune_min_pf_improvement_multiple: float = 1.2
+
     # Push notifications (app/notifications.py) — critical-event alerts sent
     # to Discord and/or Telegram. Both are optional and independent; set
     # either, both, or neither. Empty (the default) means notifications are
@@ -183,6 +254,10 @@ class Settings(BaseSettings):
     @property
     def futures_excluded_symbols(self) -> List[str]:
         return [s.strip() for s in self.futures_excluded_symbols_csv.split(",") if s.strip()]
+
+    @property
+    def autotune_tp_candidates(self) -> List[float]:
+        return [float(s.strip()) for s in self.autotune_tp_candidates_csv.split(",") if s.strip()]
 
     @property
     def exchange_api_key(self) -> str:

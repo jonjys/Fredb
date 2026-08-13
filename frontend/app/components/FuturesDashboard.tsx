@@ -3,6 +3,7 @@
 
 import { usePoll } from "@/lib/usePoll";
 import {
+  AutotuneStatusOut,
   EquityPointOut,
   FuturesPositionOut,
   FuturesStatusResponse,
@@ -23,6 +24,7 @@ import FuturesTradeHistory from "@/components/FuturesTradeHistory";
 import LiveLog from "@/components/LiveLog";
 import LeverageSelector from "@/components/LeverageSelector";
 import CircuitBreakerStatus from "@/components/CircuitBreakerStatus";
+import AutoTunePanel from "@/components/AutoTunePanel";
 import { MobileSection } from "@/components/DashboardViewContext";
 
 export default function FuturesDashboard() {
@@ -35,6 +37,15 @@ export default function FuturesDashboard() {
   const { data: logs } = usePoll<LogEntryOut[]>("/api/futures/logs", 4000);
   const { data: equity } = usePoll<EquityPointOut[]>("/api/futures/equity", 10000);
   const { data: stats } = usePoll<PerformanceStatsOut>("/api/futures/stats", 8000);
+  const { data: autotuneStatus, refetch: refetchAutotune } = usePoll<AutotuneStatusOut>(
+    "/api/autotune/status",
+    30000
+  );
+
+  async function runAutotuneNow() {
+    await fetch("/api/autotune/run", { method: "POST" });
+    refetchAutotune();
+  }
 
   async function changeLeverage(leverage: number) {
     await fetch("/api/futures/leverage", {
@@ -157,6 +168,7 @@ export default function FuturesDashboard() {
               reducedSizeTradesRemaining: status?.reduced_size_trades_remaining ?? 0,
             }}
           />
+          <AutoTunePanel status={autotuneStatus} onRunNow={runAutotuneNow} />
           <div className="rounded-xl border border-border bg-surface p-4 text-sm text-muted">
             Futures risk settings are configured server-side (see backend/.env) — the leverage
             control above is the one live-adjustable setting exposed here.

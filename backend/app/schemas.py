@@ -216,3 +216,17 @@ class OrderBookOut(BaseModel):
     symbol: str
     bids: List[List[float]]  # [[price, qty], ...] best-first
     asks: List[List[float]]  # [[price, qty], ...] best-first
+
+
+class AutotuneStatusOut(BaseModel):
+    enabled: bool
+    auto_apply: bool
+    hour_utc: int
+    lookback_days: int
+    ran_at: Optional[float] = None
+    current_tp: Optional[float] = None
+    current_pf: Optional[float] = None
+    suggested_tp: Optional[float] = None
+    suggested_pf: Optional[float] = None
+    applied: Optional[bool] = None
+    note: Optional[str] = None
