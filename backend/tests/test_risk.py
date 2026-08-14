@@ -61,11 +61,13 @@ def test_daily_drawdown_triggers_kill_switch():
 
 
 def test_take_profit_should_exceed_round_trip_costs_by_the_configured_multiple():
-    # round-trip cost = 2*0.1 + 2*0.05 = 0.3%; default floor is 3x that = 0.9%.
+    # round-trip cost = maker_fee_pct(0.02) + taker_fee_pct(0.1) + slippage_buffer_pct(0.05)
+    # = 0.17%; default floor is 3x that = 0.51%. Only the exit leg pays taker
+    # fee + slippage — entries are always postOnly/maker (see round_trip_cost_pct).
     risk = make_risk(take_profit_pct=1.2, taker_fee_pct=0.1, slippage_buffer_pct=0.05)
     assert risk.is_take_profit_worth_it() is True
-    # 0.6% only just clears 1x cost, well short of the 3x floor.
-    risk_thin_margin = make_risk(take_profit_pct=0.6, taker_fee_pct=0.1, slippage_buffer_pct=0.05)
+    # 0.3% clears 1x cost (0.17%) but falls short of the 3x floor (0.51%).
+    risk_thin_margin = make_risk(take_profit_pct=0.3, taker_fee_pct=0.1, slippage_buffer_pct=0.05)
     assert risk_thin_margin.is_take_profit_worth_it() is False
     risk_bad = make_risk(take_profit_pct=0.1, taker_fee_pct=0.1, slippage_buffer_pct=0.05)
     assert risk_bad.is_take_profit_worth_it() is False

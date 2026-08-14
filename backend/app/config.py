@@ -34,15 +34,21 @@ class Settings(BaseSettings):
     # Risk management
     max_risk_per_trade_pct: float = 1.0
     max_concurrent_positions: int = 3
-    # Must clear round_trip_cost_pct() * min_tp_cost_multiple (0.3% * 3 =
-    # 0.9% at the fee/slippage defaults below) — RiskManager.is_take_profit_worth_it()
-    # is checked at bot startup and refuses to run otherwise. 0.6% used to be
-    # the default and silently failed that check: trailing (see
-    # trailing_activate_pct) was cutting winners before they ever reached a
-    # target that was already too thin to clear fees.
-    take_profit_pct: float = 1.0
-    trailing_stop_pct: float = 0.3
-    stop_loss_pct: float = 0.5  # keeps take_profit_pct at a 2:1 reward:risk ratio
+    # Must clear round_trip_cost_pct() * min_tp_cost_multiple. round_trip_cost_pct
+    # is maker_fee_pct + taker_fee_pct + slippage_buffer_pct (entry is always
+    # postOnly/maker with no modeled slippage; only the exit leg pays taker +
+    # slippage) — 0.02 + 0.1 + 0.05 = 0.17% at the defaults below, so the floor
+    # is 0.51%. 0.6% is set deliberately close to that floor for higher trade
+    # frequency; is_take_profit_worth_it() is checked at bot startup and
+    # refuses to run below it, so this can't silently drift under the floor
+    # again the way the original 0.6%-against-a-2x-taker-cost default did.
+    take_profit_pct: float = 0.6
+    trailing_stop_pct: float = 0.25
+    # Deliberately tighter than a "safe default" SL would be, in service of
+    # a >=1.7:1 reward:risk at this TP — see docs/RISK_SETTINGS.md before
+    # tightening further; MIN_STOP_PCT (risk.py) is the hard floor beneath
+    # which a stop is considered too close to be meaningful noise protection.
+    stop_loss_pct: float = 0.35
     atr_multiplier: float = 1.5
     max_daily_loss_pct: float = 5.0
     taker_fee_pct: float = 0.1
@@ -64,7 +70,11 @@ class Settings(BaseSettings):
     htf_lookback_bars: int = 80
 
     # Post-only limit execution (app/exchange.py order helpers)
-    post_only_timeout_seconds: float = 10.0
+    # Was 10s — tightened for a faster in/out cadence now that entries
+    # chase into the spread across retries instead of just waiting
+    # passively; a stale quote sitting for 10s serves this less than a
+    # shorter wait + another, more aggressively-priced attempt would.
+    post_only_timeout_seconds: float = 4.0
     post_only_poll_interval_seconds: float = 1.0
     maker_fee_pct: float = 0.02  # Binance USDT-M futures maker rate; spot maker == taker by default
     # On an unfilled post-only entry, cancel and repost this many times at a
@@ -95,13 +105,29 @@ class Settings(BaseSettings):
     # rather than the everyday risk-per-trade control.
     max_notional_pct_of_equity: float = 0.20
 
-    # ---- Regime filters (orderbook + BTC dominance) -------------------------
-    # Skip a long when the order book is this lopsided toward asks (heavy
-    # sell pressure at the touch) even if the strategy signal says long, and
-    # the mirror for shorts. 1.0 = balanced book; <0.7 means asks
-    # outweigh bids by ~43% or more.
-    regime_orderbook_imbalance_min: float = 0.7
+    # ---- Regime filters (orderbook + BTC dominance + spread + funding) ------
+    # Skip a long unless the book is this strongly bid-heavy (confirmation,
+    # not just "not clearly bad"), and the mirror for shorts (a short needs
+    # imbalance <= 1/this). Raised from an earlier, more permissive 0.7 (which
+    # only blocked longs into a clearly ask-heavy book) to 2.0 — high-conviction
+    # entry confirmation, in exchange for materially fewer trades, deliberately
+    # trading frequency for win rate now that take_profit_pct is tight enough
+    # that a low win rate can't cover its own costs.
+    regime_orderbook_imbalance_min: float = 2.0
     regime_orderbook_depth_levels: int = 5
+    # Skip entries when the touch spread is this wide (%) — a wide spread
+    # both signals thin/uncertain liquidity and makes a maker-chase entry
+    # less likely to fill without walking the price further than intended.
+    regime_max_spread_pct: float = 0.03
+    # Skip a long when the funding rate is elevated positive (longs paying
+    # heavily to hold — a crowded, negative-expected-value long), and the
+    # mirror for shorts. Expressed as the raw fraction ccxt returns from
+    # fetch_funding_rate (0.0003 = 0.03% per 8h funding interval) — Binance
+    # funding typically runs -0.01% to +0.03% per interval, so this is
+    # "meaningfully elevated," not "impossible extreme." Futures only —
+    # spot has no funding rate concept.
+    regime_funding_extreme_threshold: float = 0.0003
+    regime_funding_cache_seconds: float = 60.0
     # BTC dominance (BTC's share of total crypto market cap) — a market-wide
     # "risk-on altcoins vs risk-off into BTC" proxy that a single symbol's
     # own order book can't tell you. Sourced from CoinGecko's free, no-key
@@ -113,12 +139,12 @@ class Settings(BaseSettings):
     regime_btc_dominance_refresh_seconds: float = 900.0
 
     # Trailing-stop activation threshold, independent of take_profit_pct.
-    # Was 0.25% — well under a third of take_profit_pct — which meant
-    # trailing kicked in almost immediately and clipped most winners at a
-    # fraction of the nominal TP long before price could reach it. Now set
-    # to 70% of the (raised) take_profit_pct so a trade has room to actually
-    # run before trailing starts protecting the gain.
-    trailing_activate_pct: float = 0.7
+    # ~65% of take_profit_pct — a trade needs to be meaningfully past
+    # entry before trailing starts protecting the gain (the earlier 0.25%
+    # default clipped winners almost immediately), but this stays an
+    # absolute move small enough for the higher trade frequency this
+    # config now targets, rather than requiring 70% of a much larger TP.
+    trailing_activate_pct: float = 0.4
 
     # Consecutive-loss circuit breaker (on top of the daily kill switch)
     consecutive_loss_threshold: int = 4

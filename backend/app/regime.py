@@ -1,11 +1,13 @@
 # app/regime.py
 """Regime filters layered on top of the strategy signal: this symbol's own
-order-book imbalance, and BTC dominance (a market-wide risk-on/risk-off
-proxy no single symbol's order book can tell you).
+order-book imbalance and spread, BTC dominance (a market-wide risk-on/
+risk-off proxy no single symbol's order book can tell you), and — futures
+only — funding rate (crowded, expensive-to-hold positioning).
 
-Both fail open — a fetch error or insufficient data skips the gate rather
-than blocking a trade — since these are additional filters on top of the
-core signal, not infrastructure the bot should ever halt for.
+All of these fail open — a fetch error or insufficient data skips that
+specific gate rather than blocking a trade — since they're additional
+filters on top of the core signal, not infrastructure the bot should ever
+halt for.
 """
 from __future__ import annotations
 
@@ -39,6 +41,21 @@ def orderbook_imbalance(order_book: Dict, depth_levels: int) -> Optional[float]:
     if ask_qty <= 0:
         return None
     return bid_qty / ask_qty
+
+
+def spread_pct(order_book: Dict) -> Optional[float]:
+    """Touch spread as a percentage of the best bid — (best_ask - best_bid)
+    / best_bid * 100. None if the book doesn't have both sides quoted.
+    """
+    bids = order_book.get("bids") or []
+    asks = order_book.get("asks") or []
+    if not bids or not asks:
+        return None
+    best_bid = bids[0][0]
+    best_ask = asks[0][0]
+    if best_bid <= 0:
+        return None
+    return (best_ask - best_bid) / best_bid * 100
 
 
 def _fetch_btc_dominance_sync() -> float:
@@ -108,28 +125,55 @@ class BtcDominanceTracker:
 btc_dominance_tracker = BtcDominanceTracker()
 
 
-async def regime_block_reason(broker: Any, symbol: str, side: str, settings: Settings) -> Optional[str]:
-    """None if `side` ("long"/"short") clears both regime gates for `symbol`,
-    else a short human-readable reason it didn't — for skip-logging.
+async def regime_block_reason(
+    broker: Any, symbol: str, side: str, settings: Settings, check_funding: bool = False
+) -> Optional[str]:
+    """None if `side` ("long"/"short") clears every regime gate for
+    `symbol`, else a short human-readable reason it didn't — for
+    skip-logging.
 
-    Both gates fail open: a broker/order-book fetch error or a BTC
-    dominance read with insufficient history skips that gate rather than
-    blocking the trade, since a regime filter going dark shouldn't itself
-    become a reason no positions ever open.
+    Every gate fails open: a broker fetch error, a BTC-dominance read with
+    insufficient history, or (with check_funding=True) a funding-rate
+    fetch error skips that specific gate rather than blocking the trade —
+    a regime filter going dark shouldn't itself become a reason no
+    positions ever open. check_funding should only be true for a futures
+    broker; spot has no funding-rate concept (Broker has no
+    get_funding_rate method at all).
     """
     try:
         book = await broker.get_order_book(symbol, settings.regime_orderbook_depth_levels)
         imbalance = orderbook_imbalance(book, settings.regime_orderbook_depth_levels)
+        spread = spread_pct(book)
     except Exception:
         logger.warning("Failed to fetch order book for %s regime check — gate skipped", symbol, exc_info=True)
         imbalance = None
+        spread = None
 
+    # Each reason string leads with a stable, greppable SKIP_* tag (see the
+    # 48h test plan) followed by the human-readable detail — the tag never
+    # changes even if the numbers/wording after it do.
     if imbalance is not None:
         min_imbalance = settings.regime_orderbook_imbalance_min
         if side == "long" and imbalance < min_imbalance:
-            return f"orderbook imbalance {imbalance:.2f}<{min_imbalance:.2f} (ask-heavy)"
+            return f"SKIP_BOOK_WEAK_LONG orderbook imbalance {imbalance:.2f}<{min_imbalance:.2f} (ask-heavy)"
         if side == "short" and min_imbalance > 0 and imbalance > 1 / min_imbalance:
-            return f"orderbook imbalance {imbalance:.2f}>{1 / min_imbalance:.2f} (bid-heavy)"
+            return f"SKIP_BOOK_WEAK_SHORT orderbook imbalance {imbalance:.2f}>{1 / min_imbalance:.2f} (bid-heavy)"
+
+    if spread is not None and spread > settings.regime_max_spread_pct:
+        return f"SKIP_SPREAD {spread:.4f}%>{settings.regime_max_spread_pct:.4f}% (too wide)"
+
+    if check_funding:
+        try:
+            funding = await broker.get_funding_rate(symbol, settings.regime_funding_cache_seconds)
+        except Exception:
+            logger.warning("Failed to fetch funding rate for %s regime check — gate skipped", symbol, exc_info=True)
+            funding = None
+        if funding is not None:
+            threshold = settings.regime_funding_extreme_threshold
+            if side == "long" and funding > threshold:
+                return f"SKIP_FUNDING_NEGATIVE_EV funding {funding:.5f}>{threshold:.5f} (crowded/expensive long)"
+            if side == "short" and funding < -threshold:
+                return f"SKIP_FUNDING_NEGATIVE_EV funding {funding:.5f}<{-threshold:.5f} (crowded/expensive short)"
 
     if settings.regime_btc_dominance_enabled:
         change_pct = await btc_dominance_tracker.get_change_1h_pct(settings.regime_btc_dominance_refresh_seconds)

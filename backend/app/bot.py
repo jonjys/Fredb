@@ -58,6 +58,9 @@ class TradingBot:
         self._stopping = False
         self._last_prices: Dict[str, float] = {}
         self._last_skip_reason: Dict[str, str] = {}
+        self._maker_entry_attempts = 0
+        self._maker_entry_fills = 0
+        self._maker_fill_rate_logged_at = time.time()
 
     async def start_background_loop(self) -> None:
         await asyncio.to_thread(self.store.init, self.settings.paper_starting_balance)
@@ -123,6 +126,7 @@ class TradingBot:
 
     async def _tick(self) -> None:
         await self._roll_daily_window_if_needed()
+        self._maybe_log_maker_fill_rate()
         state = await self.store.get_state()
 
         # 1. Always manage existing open positions, regardless of run state.
@@ -190,6 +194,24 @@ class TradingBot:
         if self.settings.bot_mode == "paper":
             await self.store.update_state(paper_balance=quote_balance)
         return quote_balance + positions_value
+
+    def _maybe_log_maker_fill_rate(self) -> None:
+        """Once an hour, report what fraction of post-only entry attempts
+        actually filled maker (vs timing out and getting walked away
+        from) — the ratio PR30's chase-into-spread logic is meant to move.
+        """
+        now = time.time()
+        if now - self._maker_fill_rate_logged_at < 3600:
+            return
+        if self._maker_entry_attempts > 0:
+            rate = self._maker_entry_fills / self._maker_entry_attempts * 100
+            logger.info(
+                "MAKER_FILL_RATE %.1f%% (%d/%d) over the last hour",
+                rate, self._maker_entry_fills, self._maker_entry_attempts,
+            )
+        self._maker_entry_attempts = 0
+        self._maker_entry_fills = 0
+        self._maker_fill_rate_logged_at = now
 
     def _check_taker_leakage(self, symbol: str, fill) -> None:
         """Entry fills should structurally never pay more than the maker
@@ -262,6 +284,7 @@ class TradingBot:
         size_multiplier = self.risk.size_multiplier_for_streak(state.reduced_size_trades_remaining)
         qty = sizing.qty * size_multiplier
 
+        self._maker_entry_attempts += 1
         try:
             fill = await self.broker.buy_post_only(symbol, qty, timeout_seconds=self.settings.post_only_timeout_seconds)
         except Exception:
@@ -270,12 +293,13 @@ class TradingBot:
 
         if fill is None:
             logger.info(
-                "%s: post-only entry not filled after %d attempt(s) (%.0fs each), cancelled — "
+                "POST_ONLY_GIVEUP %s: not filled after %d attempt(s) (%.0fs each), cancelled — "
                 "will re-evaluate",
                 symbol, self.settings.post_only_max_retries + 1, self.settings.post_only_timeout_seconds,
             )
             return
 
+        self._maker_entry_fills += 1
         self._check_taker_leakage(symbol, fill)
 
         if size_multiplier < 1.0:

@@ -59,7 +59,8 @@ def test_grid_search_returns_a_suggestion_for_each_valid_candidate():
 
 
 def test_grid_search_excludes_candidates_below_the_cost_floor():
-    # round_trip_cost = 2*0.1 + 2*0.05 = 0.3%; floor = 3x = 0.9%. 0.5% fails it.
+    # round_trip_cost = maker_fee_pct(0.02) + taker_fee_pct(0.1) + slippage_buffer_pct(0.05)
+    # = 0.17%; floor = 3x = 0.51%. 0.5% falls just short of it.
     settings = make_settings(autotune_tp_candidates_csv="0.5,1.0")
     tuner = Autotuner(settings, symbols=["BTC/USDT:USDT"])
     result = tuner._grid_search_sync()
