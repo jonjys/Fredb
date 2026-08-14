@@ -123,6 +123,7 @@ class ExchangeClient:
         if mode == "testnet" and use_credentials:
             self.exchange.set_sandbox_mode(True)
         self.settings = settings
+        self._funding_cache: Dict[str, "tuple[float, float]"] = {}  # symbol -> (fetched_at, rate)
 
     @_retry()
     async def load_markets(self):
@@ -244,6 +245,47 @@ class ExchangeClient:
         return {"bids": bids, "asks": asks}
 
     @_retry()
+    async def _fetch_funding_rate_uncached(self, symbol: str) -> float:
+        ticker = await self.exchange.fetch_funding_rate(symbol)
+        return float(ticker.get("fundingRate") or 0.0)
+
+    async def fetch_funding_rate(self, symbol: str, cache_seconds: float = 60.0) -> float:
+        """Current funding rate for a USDT-M perpetual, as the raw fraction
+        ccxt returns (0.0003 = 0.03% per funding interval, Binance's usual
+        order of magnitude). Public data — works without API credentials,
+        so this is available in paper mode too. Cached per-symbol since
+        funding only settles every 8h on Binance; fetching it every poll
+        tick would be pure waste.
+        """
+        now = time.time()
+        cached = self._funding_cache.get(symbol)
+        if cached and now - cached[0] < cache_seconds:
+            return cached[1]
+        rate = await self._fetch_funding_rate_uncached(symbol)
+        self._funding_cache[symbol] = (now, rate)
+        return rate
+
+    @_retry()
+    async def get_price_tick_size(self, symbol: str) -> float:
+        """Smallest valid price increment for `symbol`, used to step a
+        post-only order price by whole ticks when chasing a fill (see
+        place_post_only_with_retries). Calls load_markets() — ccxt caches
+        internally after the first call, so this is cheap on repeat use,
+        but it does mean the first call per process pays a real request;
+        fixed-symbol mode never calls load_markets() anywhere else, unlike
+        the dynamic-universe scan.
+        """
+        await self.exchange.load_markets()
+        market = self.exchange.markets.get(symbol)
+        precision = (market or {}).get("precision", {}).get("price")
+        if precision is None:
+            return 0.0
+        if self.exchange.precisionMode == ccxt_async.TICK_SIZE:
+            return float(precision)
+        # DECIMAL_PLACES / SIGNIFICANT_DIGITS modes: precision is a digit count.
+        return 10 ** -precision
+
+    @_retry()
     async def create_post_only_limit(self, symbol: str, side: str, qty: float, price: float):
         """GTX (good-till-crossing) tells Binance to reject the order outright
         rather than fill it as a taker if it would cross the spread — the
@@ -315,21 +357,48 @@ async def place_post_only_with_retries(
     poll_interval_seconds: float,
     max_retries: int,
 ) -> "tuple[Optional[dict], int]":
-    """Place a postOnly/GTX limit at the current touch price. On timeout,
-    cancel and repost at a *fresh* touch price — the market may have moved
-    since the first quote — up to max_retries additional attempts. Every
-    attempt is still GTX, so this never crosses the spread to force a fill;
-    it only refreshes a stale price instead of giving up after one try.
+    """Place a postOnly/GTX limit, chasing the fill across up to
+    max_retries additional attempts if it times out unfilled.
+
+    Attempt 0 quotes at the current best bid/ask. Each retry re-quotes at a
+    *fresh* top-of-book (the market may have moved) and, on top of that,
+    steps price_tick_size further into the spread per attempt — still
+    strictly on the maker side, so every attempt remains GTX and can never
+    cross into a taker fill; it only makes each successive quote more
+    aggressive to raise fill probability. If the book is already only
+    ~1 tick wide there's no room to step into, so later attempts just
+    reduce to a fresh-quote repost, same as always stepping by 0.
+
+    A GTX rejection (price would have crossed) raises immediately rather
+    than timing out — caught here and treated as "this attempt failed",
+    moving straight to the next one instead of waiting out
+    timeout_seconds for an order that was never actually resting.
 
     Returns (filled_order_dict_or_None, retries_used).
     """
+    tick = await client.get_price_tick_size(symbol)
     attempts = max_retries + 1
     for attempt in range(attempts):
         best_bid, best_ask = await client.fetch_order_book_top(symbol)
-        price = best_bid if side == "buy" else best_ask
-        if price <= 0:
+        if best_bid <= 0 or best_ask <= 0:
             return None, attempt
-        order = await client.create_post_only_limit(symbol, side, qty, price)
+        step = tick * attempt
+        if side == "buy":
+            price = min(best_bid + step, best_ask - tick) if tick > 0 else best_bid
+            price = max(price, best_bid)  # never quote below the touch we just read
+        else:
+            price = max(best_ask - step, best_bid + tick) if tick > 0 else best_ask
+            price = min(price, best_ask)
+
+        try:
+            order = await client.create_post_only_limit(symbol, side, qty, price)
+        except Exception:
+            logger.info(
+                "%s postOnly %s @ %.8f rejected (would have crossed) — retrying at fresh quote",
+                symbol, side, price,
+            )
+            continue
+
         order_id = str(order.get("id", ""))
         filled = await wait_for_fill_or_cancel(client, order_id, symbol, timeout_seconds, poll_interval_seconds)
         if filled is not None and float(filled.get("filled") or 0) > 0:
@@ -561,6 +630,16 @@ class FuturesBroker(abc.ABC):
     async def get_quote_balance(self) -> float: ...
 
     @abc.abstractmethod
+    async def get_order_book(self, symbol: str, limit: int = 15) -> Dict: ...
+
+    @abc.abstractmethod
+    async def get_funding_rate(self, symbol: str, cache_seconds: float = 60.0) -> float:
+        """Current funding rate as a raw fraction (see
+        ExchangeClient.fetch_funding_rate). Public data, no futures
+        position required to read it."""
+        ...
+
+    @abc.abstractmethod
     async def get_top_symbols(self, top_n: int, min_volume_usd: float) -> List[str]:
         """Discover a tradeable symbol universe by 24h volume, instead of a
         fixed list — see ExchangeClient.fetch_top_symbols_by_volume."""
@@ -645,6 +724,9 @@ class RealFuturesBroker(FuturesBroker):
 
     async def get_order_book(self, symbol: str, limit: int = 15) -> Dict:
         return await self.client.fetch_order_book_depth(symbol, limit)
+
+    async def get_funding_rate(self, symbol: str, cache_seconds: float = 60.0) -> float:
+        return await self.client.fetch_funding_rate(symbol, cache_seconds)
 
     async def get_quote_balance(self) -> float:
         return await self.client.fetch_balance_quote(self._quote_currency)
@@ -794,6 +876,12 @@ class PaperFuturesBroker(FuturesBroker):
 
     async def get_order_book(self, symbol: str, limit: int = 15) -> Dict:
         return await self.client.fetch_order_book_depth(symbol, limit)
+
+    async def get_funding_rate(self, symbol: str, cache_seconds: float = 60.0) -> float:
+        # Public data, same real endpoint as live — paper mode's "no real
+        # money" simplification applies to fills, not to what regime
+        # filters read to decide whether to enter in the first place.
+        return await self.client.fetch_funding_rate(symbol, cache_seconds)
 
     async def get_quote_balance(self) -> float:
         return self.quote_balance

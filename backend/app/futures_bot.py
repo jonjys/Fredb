@@ -94,6 +94,9 @@ class FuturesTradingBot:
         self._dynamic_symbols: List[str] = []
         self._dynamic_symbols_refreshed_at: float = 0.0
         self._leverage_refreshed_at: float = 0.0
+        self._maker_entry_attempts = 0
+        self._maker_entry_fills = 0
+        self._maker_fill_rate_logged_at = time.time()
 
     async def start_background_loop(self) -> None:
         await asyncio.to_thread(self.store.init, self.settings.futures_paper_starting_balance)
@@ -228,6 +231,7 @@ class FuturesTradingBot:
 
     async def _tick(self) -> None:
         await self._roll_daily_window_if_needed()
+        self._maybe_log_maker_fill_rate()
         state = await self.store.get_state()
 
         open_positions = await self.store.get_open_positions()
@@ -350,6 +354,22 @@ class FuturesTradingBot:
             logger.info("SKIP %s: %s", symbol, reason)
             self._last_skip_reason[symbol] = reason
 
+    def _maybe_log_maker_fill_rate(self) -> None:
+        """See bot.py's identical helper — once an hour, report what
+        fraction of post-only entry attempts actually filled maker."""
+        now = time.time()
+        if now - self._maker_fill_rate_logged_at < 3600:
+            return
+        if self._maker_entry_attempts > 0:
+            rate = self._maker_entry_fills / self._maker_entry_attempts * 100
+            logger.info(
+                "MAKER_FILL_RATE %.1f%% (%d/%d) over the last hour",
+                rate, self._maker_entry_fills, self._maker_entry_attempts,
+            )
+        self._maker_entry_attempts = 0
+        self._maker_entry_fills = 0
+        self._maker_fill_rate_logged_at = now
+
     def _check_taker_leakage(self, symbol: str, fill) -> None:
         """See bot.py's identical helper — entry fills should structurally
         never pay more than the maker rate, so this is alerting, not
@@ -388,7 +408,7 @@ class FuturesTradingBot:
             return
         side = signal.action
 
-        block_reason = await regime_block_reason(self.broker, symbol, side, self.settings)
+        block_reason = await regime_block_reason(self.broker, symbol, side, self.settings, check_funding=True)
         if block_reason:
             self._log_skip(symbol, f"regime filter: {block_reason}")
             return
@@ -422,6 +442,7 @@ class FuturesTradingBot:
             )
             return
 
+        self._maker_entry_attempts += 1
         try:
             fill = await self.broker.open_position_post_only(
                 symbol, side, qty, sizing.leverage,
@@ -433,16 +454,20 @@ class FuturesTradingBot:
             return
 
         if fill is None:
-            # Never chase: unfilled within the timeout means we walk away and
-            # re-evaluate fresh next tick, not place a marketable order.
+            # Exhausted post_only_max_retries chasing into the spread
+            # (see place_post_only_with_retries) without filling — walk
+            # away and re-evaluate fresh next tick rather than placing a
+            # marketable order; it still never crosses the spread to force
+            # a fill even while chasing.
             logger.info(
-                "%s %s: post-only entry not filled after %d attempt(s) (%.0fs each), cancelled — "
+                "POST_ONLY_GIVEUP %s %s: not filled after %d attempt(s) (%.0fs each), cancelled — "
                 "will re-evaluate",
                 side.upper(), symbol, self.settings.post_only_max_retries + 1,
                 self.settings.post_only_timeout_seconds,
             )
             return
 
+        self._maker_entry_fills += 1
         self._check_taker_leakage(symbol, fill)
 
         if size_multiplier < 1.0:

@@ -8,9 +8,10 @@ real data on how the strategy performs for your symbols.
 |---|---|---|---|
 | Max risk per trade | **1%** | `MAX_RISK_PER_TRADE_PCT=1.0` | Fraction of equity lost if a position hits its stop-loss. Never exceed 2% while live-testing. |
 | Max concurrent positions | **3** | `MAX_CONCURRENT_POSITIONS=3` | Caps total exposure; also divides equity into per-position allocation caps. |
-| Take profit | **0.6%** | `TAKE_PROFIT_PCT=0.6` | Must exceed round-trip cost (2× fee + 2× slippage buffer) or every win is a loss after costs — the bot logs a warning-worthy config via `RiskManager.is_take_profit_worth_it()`. |
-| Trailing stop | **0.3%** | `TRAILING_STOP_PCT=0.3` | Activates only after take-profit is first reached; locks in gains while letting strong moves run. |
-| Stop loss floor | **0.4%** | `STOP_LOSS_PCT=0.4` | Hard floor on stop distance — actual distance is `max(ATR% × multiplier, this, 0.15%)`, so this only binds in very low-volatility conditions. |
+| Take profit | **0.6%** | `TAKE_PROFIT_PCT=0.6` | Must clear round-trip cost (maker entry fee + taker exit fee + slippage buffer) × `MIN_TP_COST_MULTIPLE` (3x) or the bot refuses to start — `RiskManager.is_take_profit_worth_it()` is checked at startup, not just logged. |
+| Trailing stop activation | **0.4%** | `TRAILING_ACTIVATE_PCT=0.4` | Trailing kicks in once unrealized gain reaches this — independent of, and reached before, the take-profit target. |
+| Trailing stop | **0.25%** | `TRAILING_STOP_PCT=0.25` | Distance the trailing stop trails behind the peak once active. |
+| Stop loss floor | **0.35%** | `STOP_LOSS_PCT=0.35` | Hard floor on stop distance — actual distance is `max(ATR% × multiplier, this, 0.15%)`, so this only binds in very low-volatility conditions. |
 | ATR multiplier | **1.5** | `ATR_MULTIPLIER=1.5` | Higher = wider stops in volatile markets, fewer noise stop-outs, larger per-trade loss if wrong. |
 | Max daily loss (kill switch) | **5%** | `MAX_DAILY_LOSS_PCT=5.0` | Once equity drawdown from the day's starting value hits this, the bot force-closes all positions and halts new entries until the next UTC day. |
 | Taker fee assumption | **0.1%** | `TAKER_FEE_PCT=0.1` | Binance default spot taker fee (before any BNB discount). Set to your actual tier. |
@@ -22,11 +23,16 @@ real data on how the strategy performs for your symbols.
 - **1% risk/trade × 3 concurrent positions** means a worst case of all
   three stopping out simultaneously costs ~3% of equity — survivable, not
   catastrophic, and still leaves room before the 5% daily kill-switch.
-- **Take-profit > round-trip cost** is a hard requirement, not a
-  suggestion. At 0.1% fee and 0.05% slippage buffer, round-trip cost is
-  `2×0.1 + 2×0.05 = 0.3%`. A 0.6% take-profit clears that with margin;
-  going lower (e.g. 0.2%) means winning trades can still net negative
-  after fees.
+- **Take-profit > 3x round-trip cost** is a hard, enforced requirement
+  (`RiskManager.is_take_profit_worth_it()`, checked at bot startup — not
+  just logged). Entries are always postOnly/maker (0.02% `MAKER_FEE_PCT`);
+  only the exit leg is a guaranteed taker fill, so round-trip cost is
+  `maker_fee + taker_fee + slippage_buffer` — at the defaults,
+  `0.02 + 0.1 + 0.05 = 0.17%`, so the floor is `0.51%`. 0.6% clears that
+  with a deliberately thin margin, chosen for higher trade frequency; the
+  regime filters (order-book imbalance, spread, funding — see
+  [backend/app/regime.py](../backend/app/regime.py)) exist specifically to
+  raise win rate enough to make that frequency work.
 - **5% daily kill-switch** stops a bad day from becoming a bad month. It
   resets at UTC midnight (see `TradingBot._roll_daily_window_if_needed` in
   [backend/app/bot.py](../backend/app/bot.py)).

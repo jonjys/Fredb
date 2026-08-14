@@ -10,15 +10,19 @@ import pytest
 
 import app.regime as regime_module
 from app.config import Settings
-from app.regime import BtcDominanceTracker, orderbook_imbalance, regime_block_reason
+from app.regime import BtcDominanceTracker, orderbook_imbalance, regime_block_reason, spread_pct
 
 
 class FakeBroker:
-    def __init__(self, book):
+    def __init__(self, book, funding=0.0):
         self.book = book
+        self.funding = funding
 
     async def get_order_book(self, symbol, limit):
         return self.book
+
+    async def get_funding_rate(self, symbol, cache_seconds=60.0):
+        return self.funding
 
 
 def test_orderbook_imbalance_balanced_book_is_one():
@@ -76,8 +80,20 @@ def test_btc_dominance_fails_open_on_fetch_error():
         regime_module._fetch_btc_dominance_sync = orig
 
 
+def test_spread_pct_computes_relative_to_best_bid():
+    book = {"bids": [[100.0, 1.0]], "asks": [[100.03, 1.0]]}
+    assert spread_pct(book) == pytest.approx(0.03)
+
+
+def test_spread_pct_none_for_one_sided_book():
+    assert spread_pct({"bids": [], "asks": [[101.0, 1.0]]}) is None
+
+
 def _settings(**overrides):
-    defaults = dict(regime_btc_dominance_enabled=False, regime_orderbook_imbalance_min=0.7)
+    defaults = dict(
+        regime_btc_dominance_enabled=False, regime_orderbook_imbalance_min=0.7,
+        regime_max_spread_pct=0.03, regime_funding_extreme_threshold=0.0003,
+    )
     defaults.update(overrides)
     return Settings(**defaults)
 
@@ -94,10 +110,48 @@ def test_regime_blocks_short_on_bid_heavy_book():
     assert reason is not None and "bid-heavy" in reason
 
 
-def test_regime_passes_balanced_book():
-    broker = FakeBroker({"bids": [[100.0, 10.0]], "asks": [[101.0, 10.0]]})
+def test_regime_passes_balanced_book_with_tight_spread():
+    broker = FakeBroker({"bids": [[100.0, 10.0]], "asks": [[100.02, 10.0]]})
     assert asyncio.run(regime_block_reason(broker, "BTC/USDT", "long", _settings())) is None
     assert asyncio.run(regime_block_reason(broker, "BTC/USDT", "short", _settings())) is None
+
+
+def test_regime_blocks_on_wide_spread_despite_balanced_book():
+    broker = FakeBroker({"bids": [[100.0, 10.0]], "asks": [[101.0, 10.0]]})  # 1% spread
+    reason = asyncio.run(regime_block_reason(broker, "BTC/USDT", "long", _settings()))
+    assert reason is not None and "too wide" in reason
+
+
+def test_regime_blocks_long_on_elevated_positive_funding():
+    broker = FakeBroker({"bids": [[100.0, 10.0]], "asks": [[100.02, 10.0]]}, funding=0.0005)
+    reason = asyncio.run(regime_block_reason(broker, "BTC/USDT:USDT", "long", _settings(), check_funding=True))
+    assert reason is not None and "crowded/expensive long" in reason
+
+
+def test_regime_blocks_short_on_elevated_negative_funding():
+    broker = FakeBroker({"bids": [[100.0, 10.0]], "asks": [[100.02, 10.0]]}, funding=-0.0005)
+    reason = asyncio.run(regime_block_reason(broker, "BTC/USDT:USDT", "short", _settings(), check_funding=True))
+    assert reason is not None and "crowded/expensive short" in reason
+
+
+def test_regime_ignores_funding_when_check_funding_false():
+    broker = FakeBroker({"bids": [[100.0, 10.0]], "asks": [[100.02, 10.0]]}, funding=0.5)
+    reason = asyncio.run(regime_block_reason(broker, "BTC/USDT", "long", _settings(), check_funding=False))
+    assert reason is None
+
+
+def test_regime_funding_fails_open_on_fetch_error():
+    class BrokerWithBrokenFunding:
+        async def get_order_book(self, symbol, limit):
+            return {"bids": [[100.0, 10.0]], "asks": [[100.02, 10.0]]}
+
+        async def get_funding_rate(self, symbol, cache_seconds=60.0):
+            raise RuntimeError("funding endpoint down")
+
+    reason = asyncio.run(
+        regime_block_reason(BrokerWithBrokenFunding(), "BTC/USDT:USDT", "long", _settings(), check_funding=True)
+    )
+    assert reason is None
 
 
 def test_regime_fails_open_when_orderbook_fetch_raises():

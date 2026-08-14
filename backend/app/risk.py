@@ -205,8 +205,18 @@ class RiskManager:
 
     # ---- Fees / slippage --------------------------------------------------
     def round_trip_cost_pct(self) -> float:
-        """Approximate cost of entering and exiting a position, for sanity checks."""
-        return 2 * self.settings.taker_fee_pct + 2 * self.settings.slippage_buffer_pct
+        """Approximate cost of entering and exiting a position, for sanity checks.
+
+        Entries are always postOnly/GTX (maker fee, no modeled slippage —
+        see PaperBroker/PaperFuturesBroker.buy_post_only, which fills
+        exactly at the quoted touch price). Exits (stop-loss, trailing
+        stop, take-profit) are market/taker orders, which do slip. This
+        used to charge 2x taker_fee_pct + 2x slippage_buffer_pct — treating
+        both legs as taker — which overstated the real floor and, combined
+        with a too-tight take_profit_pct, is what silently broke the
+        cost-floor guard's usefulness before it was ever wired in.
+        """
+        return self.settings.maker_fee_pct + self.settings.taker_fee_pct + self.settings.slippage_buffer_pct
 
     def is_take_profit_worth_it(self) -> bool:
         """Guards against configuring a TP that barely clears round-trip costs.
